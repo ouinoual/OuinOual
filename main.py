@@ -3,6 +3,7 @@ import uuid
 import secrets
 import subprocess
 from urllib.parse import urlencode
+from typing import Optional
 
 import httpx
 from fastapi import FastAPI
@@ -24,10 +25,10 @@ TIKTOK_REDIRECT_URI = os.environ.get("TIKTOK_REDIRECT_URI")
 DEFAULT_SCOPE = "user.info.basic,video.upload"
 
 
-def _require_env(value: str | None, name: str):
+def require_env(value: Optional[str], name: str):
     if not value:
-        raise RuntimeError(f"Missing environment variable: {name}")
-    return value
+        return None, JSONResponse({"ok": False, "error": f"Missing environment variable: {name}"}, status_code=500)
+    return value, None
 
 
 @app.get("/health")
@@ -62,8 +63,13 @@ def extract(payload: dict):
 
 @app.get("/tiktok/login")
 def tiktok_login():
-    client_key = _require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
-    redirect_uri = _require_env(TIKTOK_REDIRECT_URI, "TIKTOK_REDIRECT_URI")
+    client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
+    if err:
+        return err
+
+    redirect_uri, err = require_env(TIKTOK_REDIRECT_URI, "TIKTOK_REDIRECT_URI")
+    if err:
+        return err
 
     state = secrets.token_urlsafe(16)
 
@@ -80,15 +86,23 @@ def tiktok_login():
 
 
 @app.get("/tiktok/callback")
-async def tiktok_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+async def tiktok_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
     if error:
         return JSONResponse({"ok": False, "error": error, "state": state}, status_code=400)
     if not code:
         return JSONResponse({"ok": False, "error": "Missing code", "state": state}, status_code=400)
 
-    client_key = _require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
-    client_secret = _require_env(TIKTOK_CLIENT_SECRET, "TIKTOK_CLIENT_SECRET")
-    redirect_uri = _require_env(TIKTOK_REDIRECT_URI, "TIKTOK_REDIRECT_URI")
+    client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
+    if err:
+        return err
+
+    client_secret, err = require_env(TIKTOK_CLIENT_SECRET, "TIKTOK_CLIENT_SECRET")
+    if err:
+        return err
+
+    redirect_uri, err = require_env(TIKTOK_REDIRECT_URI, "TIKTOK_REDIRECT_URI")
+    if err:
+        return err
 
     data = {
         "client_key": client_key,
