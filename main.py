@@ -1,8 +1,9 @@
 import os
+import json
+import time
 import uuid
 import secrets
 import subprocess
-import time
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -12,24 +13,27 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 
-# Disable automatic 307 redirects between "/path" and "/path/" to avoid double-callback issues
-app = FastAPI(redirect_slashes=False)
+# يمنع 307 بين /path و /path/ لتفادي callback مزدوج
+app = FastAPI(redirect_slashes=False)  # [web:432]
 
 FILES_DIR = "files"
 os.makedirs(FILES_DIR, exist_ok=True)
 app.mount("/files", StaticFiles(directory=FILES_DIR), name="files")
 
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL")
+
 TIKTOK_CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY")
 TIKTOK_CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET")
 TIKTOK_REDIRECT_URI = os.environ.get("TIKTOK_REDIRECT_URI")
 
-# Add video.publish here
+# هنا نفعّل video.publish
 DEFAULT_SCOPE = "user.info.basic,video.upload,video.publish"
 
-# Simple in-memory replay protection for authorization codes (best-effort)
+TOKENS_PATH = os.environ.get("TOKENS_PATH", "tokens.json")
+TOKEN_SKEW_SECONDS = 120  # نجدد قبل الانتهاء بدقيقتين
+
 USED_CODES = {}
-USED_CODES_TTL_SECONDS = 10 * 60  # 10 minutes
+USED_CODES_TTL_SECONDS = 10 * 60  # منع إعادة استخدام code (أفضل جهد)
 
 
 def require_env(value: Optional[str], name: str):
@@ -41,11 +45,84 @@ def require_env(value: Optional[str], name: str):
     return value, None
 
 
+def load_tokens():
+    if not os.path.exists(TOKENS_PATH):
+        return None
+    with open(TOKENS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_tokens(tokens: dict):
+    with open(TOKENS_PATH, "w", encoding="utf-8") as f:
+        json.dump(tokens, f, ensure_ascii=False, indent=2)
+
+
 def cleanup_used_codes():
     now = time.time()
     expired = [k for k, ts in USED_CODES.items() if (now - ts) > USED_CODES_TTL_SECONDS]
     for k in expired:
         USED_CODES.pop(k, None)
+
+
+def token_expired(tokens: dict) -> bool:
+    return time.time() >= float(tokens.get("expires_at", 0)) - TOKEN_SKEW_SECONDS
+
+
+async def refresh_access_token():
+    """
+    Refresh عبر نفس endpoint /v2/oauth/token/ مع grant_type=refresh_token. [web:305]
+    """
+    tokens = load_tokens()
+    if not tokens or not tokens.get("refresh_token"):
+        return None, JSONResponse({"ok": False, "error": "No refresh_token stored. Visit /tiktok/login"}, status_code=400)
+
+    client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
+    if err:
+        return None, err
+
+    client_secret, err = require_env(TIKTOK_CLIENT_SECRET, "TIKTOK_CLIENT_SECRET")
+    if err:
+        return None, err
+
+    data = {
+        "client_key": client_key,
+        "client_secret": client_secret,
+        "grant_type": "refresh_token",
+        "refresh_token": tokens["refresh_token"],
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            "https://open.tiktokapis.com/v2/oauth/token/",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    body = r.json()
+    if r.status_code != 200 or not body.get("access_token"):
+        return None, JSONResponse({"ok": False, "token_response": body}, status_code=r.status_code)
+
+    new_tokens = {
+        **tokens,
+        **body,
+        "expires_at": time.time() + int(body.get("expires_in", 0)),
+        "refresh_expires_at": time.time() + int(body.get("refresh_expires_in", 0)),
+    }
+    save_tokens(new_tokens)
+    return new_tokens, None
+
+
+async def get_valid_access_token():
+    tokens = load_tokens()
+    if not tokens or not tokens.get("access_token"):
+        return None, JSONResponse({"ok": False, "error": "Not authorized yet. Visit /tiktok/login"}, status_code=400)
+
+    if token_expired(tokens):
+        tokens, err = await refresh_access_token()
+        if err:
+            return None, err
+
+    return tokens["access_token"], None
 
 
 @app.get("/health")
@@ -57,6 +134,9 @@ def health():
 @app.post("/extract")
 @app.post("/extract/")
 def extract(payload: dict):
+    """
+    يحول رابط فيديو إلى ملف mp4 داخل /files ويعطيك fileUrl. [file:450]
+    """
     url = payload.get("url")
     if not url:
         return JSONResponse({"error": "Missing url"}, status_code=400)
@@ -71,18 +151,20 @@ def extract(payload: dict):
         "-o", outtmpl,
         url,
     ]
-
     subprocess.check_call(cmd)
 
     if not PUBLIC_BASE_URL:
         return JSONResponse({"error": "Missing PUBLIC_BASE_URL"}, status_code=500)
 
-    return {"fileUrl": f"{PUBLIC_BASE_URL}/files/{file_id}.mp4"}
+    return {"file_id": file_id, "fileUrl": f"{PUBLIC_BASE_URL}/files/{file_id}.mp4"}
 
 
 @app.get("/tiktok/login")
 @app.get("/tiktok/login/")
 def tiktok_login():
+    """
+    يبني authorize URL بـ response_type=code وscope المطلوب. [web:305]
+    """
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
     if err:
         return err
@@ -104,7 +186,6 @@ def tiktok_login():
     auth_url = "https://www.tiktok.com/v2/auth/authorize/?" + urlencode(params)
 
     resp = RedirectResponse(auth_url, status_code=302)
-    # Store state in HttpOnly cookie to validate callback
     resp.set_cookie(
         key="tt_state",
         value=state,
@@ -125,7 +206,7 @@ async def tiktok_callback(
     error: Optional[str] = None,
     error_description: Optional[str] = None,
 ):
-    # Some services/proxies send HEAD; don't spend a code on that
+    # HEAD من proxies: لا تستهلك code
     if request.method == "HEAD":
         return JSONResponse({"ok": True})
 
@@ -138,9 +219,8 @@ async def tiktok_callback(
     if not code:
         return JSONResponse({"ok": False, "error": "Missing code", "state": state}, status_code=400)
 
-    # Validate state against cookie
     cookie_state = request.cookies.get("tt_state")
-    if not cookie_state or (state != cookie_state):
+    if not cookie_state or state != cookie_state:
         return JSONResponse({"ok": False, "error": "Invalid state", "state": state}, status_code=400)
 
     cleanup_used_codes()
@@ -160,6 +240,7 @@ async def tiktok_callback(
     if err:
         return err
 
+    # exchange code -> token [web:305]
     data = {
         "client_key": client_key,
         "client_secret": client_secret,
@@ -175,7 +256,63 @@ async def tiktok_callback(
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
-    # Clear state cookie after callback
-    resp = JSONResponse({"ok": True, "state": state, "token_response": r.json()}, status_code=r.status_code)
+    body = r.json()
+
+    # خزّن فقط إذا نجح
+    if r.status_code == 200 and body.get("access_token"):
+        stored = {
+            **body,
+            "expires_at": time.time() + int(body.get("expires_in", 0)),
+            "refresh_expires_at": time.time() + int(body.get("refresh_expires_in", 0)),
+        }
+        save_tokens(stored)
+
+    resp = JSONResponse({"ok": True, "state": state, "token_response": body}, status_code=r.status_code)
     resp.delete_cookie("tt_state")
     return resp
+
+
+@app.get("/tiktok/token")
+@app.get("/tiktok/token/")
+def token_info():
+    """
+    يعرض معلومات غير حساسة (بدون tokens).
+    """
+    t = load_tokens()
+    if not t:
+        return JSONResponse({"ok": False, "error": "No tokens stored yet"}, status_code=404)
+
+    return {
+        "ok": True,
+        "open_id": t.get("open_id"),
+        "scope": t.get("scope"),
+        "expires_at": t.get("expires_at"),
+        "refresh_expires_at": t.get("refresh_expires_at"),
+    }
+
+
+@app.post("/tiktok/publish")
+@app.post("/tiktok/publish/")
+async def tiktok_direct_post(payload: dict):
+    """
+    Direct Post flow: init -> PUT upload -> status/fetch. [web:411][web:459][web:472]
+    payload:
+      - file_id: (من /extract) أو
+      - file_path: مسار mp4 محلي
+      - title: نص
+      - privacy_level: مثال "PRIVATE" (أنصح بها أثناء الاختبار)
+    """
+    access_token, err = await get_valid_access_token()
+    if err:
+        return err
+
+    file_id = payload.get("file_id")
+    file_path = payload.get("file_path")
+    title = payload.get("title", "Posted via API")
+    privacy_level = payload.get("privacy_level", "PRIVATE")
+
+    if file_id:
+        file_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
+
+    if not file_path or not os.path.exists(file_path):
+        return JSONResponse({"ok": False, "error": "Missing file_path or file not f
