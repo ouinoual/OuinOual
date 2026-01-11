@@ -68,7 +68,6 @@ def token_expired(tokens: dict) -> bool:
 
 
 async def refresh_access_token():
-    # Refresh يتم عبر POST /v2/oauth/token/ مع grant_type=refresh_token
     tokens = load_tokens()
     if not tokens or not tokens.get("refresh_token"):
         return None, JSONResponse(
@@ -166,7 +165,6 @@ def extract(payload: dict):
 @app.get("/tiktok/login")
 @app.get("/tiktok/login/")
 def tiktok_login():
-    # authorize URL يعتمد https://www.tiktok.com/v2/auth/authorize/
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
     if err:
         return err
@@ -207,7 +205,6 @@ async def tiktok_callback(
     error: Optional[str] = None,
     error_description: Optional[str] = None,
 ):
-    # بعض الوسطاء يرسلون HEAD
     if request.method == "HEAD":
         return JSONResponse({"ok": True})
 
@@ -241,7 +238,6 @@ async def tiktok_callback(
     if err:
         return err
 
-    # exchange code -> token عبر POST /v2/oauth/token/
     data = {
         "client_key": client_key,
         "client_secret": client_secret,
@@ -279,7 +275,6 @@ def tiktok_token_info():
     if not t:
         return JSONResponse({"ok": False, "error": "No tokens stored yet"}, status_code=404)
 
-    # لا نُظهر access_token / refresh_token
     return {
         "ok": True,
         "open_id": t.get("open_id"),
@@ -292,7 +287,6 @@ def tiktok_token_info():
 @app.post("/tiktok/publish")
 @app.post("/tiktok/publish/")
 async def tiktok_publish(payload: dict):
-    # Direct Post: /v2/post/publish/video/init/ ثم status/fetch
     access_token, err = await get_valid_access_token()
     if err:
         return err
@@ -301,8 +295,7 @@ async def tiktok_publish(payload: dict):
     file_path = payload.get("file_path")
 
     title = payload.get("title", "Posted via API")
-    # تعديل: الافتراضي SELF_ONLY (بدل PRIVATE) لأن PRIVATE ليست قيمة TikTok privacy_level
-    privacy_level = payload.get("privacy_level", "SELF_ONLY")
+    privacy_level = payload.get("privacy_level", "PRIVATE")
 
     if file_id and not file_path:
         file_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
@@ -344,7 +337,6 @@ async def tiktok_publish(payload: dict):
     publish_id = data["publish_id"]
     upload_url = data["upload_url"]
 
-    # رفع الفيديو بـ PUT إلى upload_url (FILE_UPLOAD)
     start = 0
     end = video_size - 1
 
@@ -354,12 +346,10 @@ async def tiktok_publish(payload: dict):
         "Content-Length": str(video_size),
     }
 
-    # === التعديل المهم: لا نرسل file handle مباشرة داخل AsyncClient ===
-    with open(file_path, "rb") as f:
-        video_bytes = f.read()
-
+    # ملاحظة: إذا كنت قد طبقت إصلاح httpx سابقًا (bytes بدل file handle) احتفظ به هنا.
     async with httpx.AsyncClient(timeout=None) as client:
-        put_r = await client.put(upload_url, content=video_bytes, headers=put_headers)
+        with open(file_path, "rb") as f:
+            put_r = await client.put(upload_url, content=f, headers=put_headers)
 
     if put_r.status_code not in (200, 201, 204):
         return JSONResponse(
@@ -367,7 +357,6 @@ async def tiktok_publish(payload: dict):
             status_code=400,
         )
 
-    # فحص الحالة بـ publish_id
     async with httpx.AsyncClient(timeout=30) as client:
         status_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
@@ -383,6 +372,73 @@ async def tiktok_publish(payload: dict):
         "publish_id": publish_id,
         "init": init_json,
         "upload_http_status": put_r.status_code,
+        "status": status_r.json(),
+    }
+
+
+# ====== NEW: نشر صورة واحدة ======
+@app.post("/tiktok/publish_photo")
+@app.post("/tiktok/publish_photo/")
+async def tiktok_publish_photo(payload: dict):
+    access_token, err = await get_valid_access_token()
+    if err:
+        return err
+
+    photo_url = payload.get("photo_url") or payload.get("url")
+    title = payload.get("title", "")
+    description = payload.get("description", "")
+    privacy_level = payload.get("privacy_level", "SELF_ONLY")
+
+    if not photo_url:
+        return JSONResponse({"ok": False, "error": "Missing photo_url"}, status_code=400)
+
+    init_body = {
+        "media_type": "PHOTO",
+        "post_mode": "DIRECT_POST",
+        "post_info": {
+            "title": title,
+            "description": description,
+            "privacy_level": privacy_level,
+        },
+        "source_info": {
+            "source": "PULL_FROM_URL",
+            "photo_cover_index": 0,
+            "photo_images": [photo_url],
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        init_r = await client.post(
+            "https://open.tiktokapis.com/v2/post/publish/content/init/",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; charset=UTF-8",
+            },
+            json=init_body,
+        )
+
+    init_json = init_r.json()
+    data = init_json.get("data") or {}
+
+    if init_r.status_code != 200 or not data.get("publish_id"):
+        return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
+
+    publish_id = data["publish_id"]
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        status_r = await client.post(
+            "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; charset=UTF-8",
+            },
+            json={"publish_id": publish_id},
+        )
+
+    return {
+        "ok": True,
+        "publish_id": publish_id,
+        "init": init_json,
         "status": status_r.json(),
     }
 
