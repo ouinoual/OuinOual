@@ -4,7 +4,7 @@ import time
 import uuid
 import secrets
 import subprocess
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import urlencode
 
 import httpx
@@ -35,7 +35,7 @@ USED_CODES = {}
 USED_CODES_TTL_SECONDS = 10 * 60  # 10 دقائق
 
 
-def require_env(value: Optional[str], name: str):
+def require_env(value: Optional[str], name: str) -> Tuple[Optional[str], Optional[JSONResponse]]:
     if not value:
         return None, JSONResponse(
             {"ok": False, "error": f"Missing environment variable: {name}"},
@@ -44,19 +44,19 @@ def require_env(value: Optional[str], name: str):
     return value, None
 
 
-def load_tokens():
+def load_tokens() -> Optional[dict]:
     if not os.path.exists(TOKENS_PATH):
         return None
     with open(TOKENS_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def save_tokens(tokens: dict):
+def save_tokens(tokens: dict) -> None:
     with open(TOKENS_PATH, "w", encoding="utf-8") as f:
         json.dump(tokens, f, ensure_ascii=False, indent=2)
 
 
-def cleanup_used_codes():
+def cleanup_used_codes() -> None:
     now = time.time()
     expired = [k for k, ts in USED_CODES.items() if (now - ts) > USED_CODES_TTL_SECONDS]
     for k in expired:
@@ -127,6 +127,12 @@ async def get_valid_access_token():
     return tokens["access_token"], None
 
 
+@app.get("/")
+@app.head("/")
+def root():
+    return {"ok": True}
+
+
 @app.get("/health")
 @app.get("/health/")
 def health():
@@ -145,12 +151,9 @@ def extract(payload: dict):
 
     cmd = [
         "yt-dlp",
-        "-f",
-        "bv*+ba/best",
-        "--merge-output-format",
-        "mp4",
-        "-o",
-        outtmpl,
+        "-f", "bv*+ba/best",
+        "--merge-output-format", "mp4",
+        "-o", outtmpl,
         url,
     ]
 
@@ -159,7 +162,11 @@ def extract(payload: dict):
     if not PUBLIC_BASE_URL:
         return JSONResponse({"ok": False, "error": "Missing PUBLIC_BASE_URL"}, status_code=500)
 
-    return {"ok": True, "file_id": file_id, "fileUrl": f"{PUBLIC_BASE_URL}/files/{file_id}.mp4"}
+    return {
+        "ok": True,
+        "file_id": file_id,
+        "fileUrl": f"{PUBLIC_BASE_URL}/files/{file_id}.mp4",
+    }
 
 
 @app.get("/tiktok/login")
@@ -174,6 +181,7 @@ def tiktok_login():
         return err
 
     state = secrets.token_urlsafe(16)
+
     params = {
         "client_key": client_key,
         "scope": DEFAULT_SCOPE,
@@ -205,6 +213,7 @@ async def tiktok_callback(
     error: Optional[str] = None,
     error_description: Optional[str] = None,
 ):
+    # بعض الوسطاء يرسلون HEAD
     if request.method == "HEAD":
         return JSONResponse({"ok": True})
 
@@ -224,6 +233,7 @@ async def tiktok_callback(
     cleanup_used_codes()
     if code in USED_CODES:
         return JSONResponse({"ok": False, "error": "Code already used"}, status_code=400)
+
     USED_CODES[code] = time.time()
 
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
@@ -263,7 +273,7 @@ async def tiktok_callback(
         }
         save_tokens(stored)
 
-    resp = JSONResponse({"ok": True, "state": state, "token_response": body}, status_code=r.status_code)
+    resp = JSONResponse({"ok": r.status_code == 200, "state": state, "token_response": body}, status_code=r.status_code)
     resp.delete_cookie("tt_state")
     return resp
 
@@ -275,6 +285,7 @@ def tiktok_token_info():
     if not t:
         return JSONResponse({"ok": False, "error": "No tokens stored yet"}, status_code=404)
 
+    # لا نُظهر access_token / refresh_token
     return {
         "ok": True,
         "open_id": t.get("open_id"),
@@ -291,13 +302,16 @@ async def tiktok_publish(payload: dict):
     if err:
         return err
 
-    file_id = payload.get("file_id")
-    file_path = payload.get("file_path")
+    # Accept multiple aliases to avoid Make mapping issues:
+    # - file_id / fileid
+    # - file_path / filepath
+    file_id = payload.get("file_id") or payload.get("fileid")
+    file_path = payload.get("file_path") or payload.get("filepath")
 
     title = payload.get("title", "Posted via API")
-    privacy_level = payload.get("privacy_level", "PRIVATE")
+    privacy_level = (payload.get("privacy_level") or "PRIVATE").strip()
 
-    if file_id and not file_path:
+    if file_id:
         file_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
 
     if not file_path or not os.path.exists(file_path):
@@ -337,19 +351,21 @@ async def tiktok_publish(payload: dict):
     publish_id = data["publish_id"]
     upload_url = data["upload_url"]
 
+    # PUT upload (Chunk واحد)
     start = 0
     end = video_size - 1
-
     put_headers = {
         "Content-Type": "video/mp4",
         "Content-Range": f"bytes {start}-{end}/{video_size}",
         "Content-Length": str(video_size),
     }
 
-    # ملاحظة: إذا كنت قد طبقت إصلاح httpx سابقًا (bytes بدل file handle) احتفظ به هنا.
+    # FIX: لا نمرّر file-handle إلى AsyncClient (يسبب sync/async mismatch)
+    with open(file_path, "rb") as f:
+        video_bytes = f.read()
+
     async with httpx.AsyncClient(timeout=None) as client:
-        with open(file_path, "rb") as f:
-            put_r = await client.put(upload_url, content=f, headers=put_headers)
+        put_r = await client.put(upload_url, content=video_bytes, headers=put_headers)
 
     if put_r.status_code not in (200, 201, 204):
         return JSONResponse(
@@ -357,6 +373,7 @@ async def tiktok_publish(payload: dict):
             status_code=400,
         )
 
+    # status/fetch
     async with httpx.AsyncClient(timeout=30) as client:
         status_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
@@ -372,73 +389,6 @@ async def tiktok_publish(payload: dict):
         "publish_id": publish_id,
         "init": init_json,
         "upload_http_status": put_r.status_code,
-        "status": status_r.json(),
-    }
-
-
-# ====== NEW: نشر صورة واحدة ======
-@app.post("/tiktok/publish_photo")
-@app.post("/tiktok/publish_photo/")
-async def tiktok_publish_photo(payload: dict):
-    access_token, err = await get_valid_access_token()
-    if err:
-        return err
-
-    photo_url = payload.get("photo_url") or payload.get("url")
-    title = payload.get("title", "")
-    description = payload.get("description", "")
-    privacy_level = payload.get("privacy_level", "SELF_ONLY")
-
-    if not photo_url:
-        return JSONResponse({"ok": False, "error": "Missing photo_url"}, status_code=400)
-
-    init_body = {
-        "media_type": "PHOTO",
-        "post_mode": "DIRECT_POST",
-        "post_info": {
-            "title": title,
-            "description": description,
-            "privacy_level": privacy_level,
-        },
-        "source_info": {
-            "source": "PULL_FROM_URL",
-            "photo_cover_index": 0,
-            "photo_images": [photo_url],
-        },
-    }
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        init_r = await client.post(
-            "https://open.tiktokapis.com/v2/post/publish/content/init/",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json; charset=UTF-8",
-            },
-            json=init_body,
-        )
-
-    init_json = init_r.json()
-    data = init_json.get("data") or {}
-
-    if init_r.status_code != 200 or not data.get("publish_id"):
-        return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
-
-    publish_id = data["publish_id"]
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        status_r = await client.post(
-            "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json; charset=UTF-8",
-            },
-            json={"publish_id": publish_id},
-        )
-
-    return {
-        "ok": True,
-        "publish_id": publish_id,
-        "init": init_json,
         "status": status_r.json(),
     }
 
@@ -465,3 +415,4 @@ async def tiktok_status(payload: dict):
         )
 
     return JSONResponse({"ok": True, "response": r.json()}, status_code=r.status_code)
+
