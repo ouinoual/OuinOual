@@ -127,12 +127,6 @@ async def get_valid_access_token():
     return tokens["access_token"], None
 
 
-@app.get("/")
-@app.head("/")
-def root():
-    return {"ok": True}
-
-
 @app.get("/health")
 @app.get("/health/")
 def health():
@@ -156,17 +150,12 @@ def extract(payload: dict):
         "-o", outtmpl,
         url,
     ]
-
     subprocess.check_call(cmd)
 
     if not PUBLIC_BASE_URL:
         return JSONResponse({"ok": False, "error": "Missing PUBLIC_BASE_URL"}, status_code=500)
 
-    return {
-        "ok": True,
-        "file_id": file_id,
-        "fileUrl": f"{PUBLIC_BASE_URL}/files/{file_id}.mp4",
-    }
+    return {"ok": True, "file_id": file_id, "fileUrl": f"{PUBLIC_BASE_URL}/files/{file_id}.mp4"}
 
 
 @app.get("/tiktok/login")
@@ -181,7 +170,6 @@ def tiktok_login():
         return err
 
     state = secrets.token_urlsafe(16)
-
     params = {
         "client_key": client_key,
         "scope": DEFAULT_SCOPE,
@@ -191,7 +179,6 @@ def tiktok_login():
     }
 
     auth_url = "https://www.tiktok.com/v2/auth/authorize/?" + urlencode(params)
-
     resp = RedirectResponse(auth_url, status_code=302)
     resp.set_cookie(
         key="tt_state",
@@ -264,7 +251,6 @@ async def tiktok_callback(
         )
 
     body = r.json()
-
     if r.status_code == 200 and body.get("access_token"):
         stored = {
             **body,
@@ -298,18 +284,26 @@ def tiktok_token_info():
 @app.post("/tiktok/publish")
 @app.post("/tiktok/publish/")
 async def tiktok_publish(payload: dict):
+    """
+    Direct Post: /v2/post/publish/video/init/ ثم PUT upload_url ثم status/fetch
+    """
     access_token, err = await get_valid_access_token()
     if err:
         return err
 
-    # Accept multiple aliases to avoid Make mapping issues:
-    # - file_id / fileid
-    # - file_path / filepath
-    file_id = payload.get("file_id") or payload.get("fileid")
-    file_path = payload.get("file_path") or payload.get("filepath")
+    # دعم أسماء مختلفة حتى لا تتعطل السيناريوهات:
+    # fileid / file_id
+    # filepath / file_path
+    file_id = payload.get("fileid") or payload.get("file_id")
+    file_path = payload.get("filepath") or payload.get("file_path")
 
-    title = payload.get("title", "Posted via API")
-    privacy_level = (payload.get("privacy_level") or "PRIVATE").strip()
+    # إصلاح دائم: تنظيف النصوص + قيمة افتراضية إذا صار العنوان فارغًا
+    title = (payload.get("title") or "").strip()
+    if not title:
+        title = "Posted via API"
+
+    # دعم privacy_level أو privacylevel + تنظيف المسافات
+    privacy_level = (payload.get("privacy_level") or payload.get("privacylevel") or "PRIVATE").strip()
 
     if file_id:
         file_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
@@ -351,7 +345,7 @@ async def tiktok_publish(payload: dict):
     publish_id = data["publish_id"]
     upload_url = data["upload_url"]
 
-    # PUT upload (Chunk واحد)
+    # رفع الفيديو بـ PUT إلى upload_url (Chunk واحد)
     start = 0
     end = video_size - 1
     put_headers = {
@@ -360,7 +354,7 @@ async def tiktok_publish(payload: dict):
         "Content-Length": str(video_size),
     }
 
-    # FIX: لا نمرّر file-handle إلى AsyncClient (يسبب sync/async mismatch)
+    # FIX: لا تمرّر file-handle إلى AsyncClient (يسبب sync/async mismatch)
     with open(file_path, "rb") as f:
         video_bytes = f.read()
 
@@ -373,7 +367,6 @@ async def tiktok_publish(payload: dict):
             status_code=400,
         )
 
-    # status/fetch
     async with httpx.AsyncClient(timeout=30) as client:
         status_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
@@ -415,4 +408,3 @@ async def tiktok_status(payload: dict):
         )
 
     return JSONResponse({"ok": True, "response": r.json()}, status_code=r.status_code)
-
