@@ -492,3 +492,65 @@ async def tiktok_publish_photo(payload: dict):
         "init": init_json,
         "status": status_r.json(),
     }
+@app.post("/publish_video_deal")
+@app.post("/publish_video_deal/")
+async def publish_video_deal(payload: dict):
+    import video_generator
+    import uuid
+    
+    deal = payload.get("deal", {})
+    title = payload.get("title", "Deal!")
+    privacy = payload.get("privacy_level", "PRIVATE")
+    
+    # توليد الفيديو
+    file_id = str(uuid.uuid4())
+    video_path = f"files/{file_id}.mp4"
+    
+    result = video_generator.create_video_from_deal(deal, video_path)
+    if not result:
+        return JSONResponse({"ok": False, "error": "فشل توليد الفيديو"}, status_code=500)
+    
+    # نشر على تيك توك
+    access_token, err = await get_valid_access_token()
+    if err:
+        return err
+    
+    video_size = os.path.getsize(video_path)
+    
+    init_body = {
+        "post_info": {"title": title, "privacy_level": privacy},
+        "source_info": {
+            "source": "FILE_UPLOAD",
+            "video_size": video_size,
+            "chunk_size": video_size,
+            "total_chunk_count": 1,
+        },
+    }
+    
+    async with httpx.AsyncClient(timeout=60) as client:
+        init_r = await client.post(
+            "https://open.tiktokapis.com/v2/post/publish/video/init/",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json; charset=UTF-8"},
+            json=init_body,
+        )
+    
+    data = init_r.json().get("data", {})
+    if not data.get("upload_url"):
+        return JSONResponse({"ok": False, "response": init_r.json()}, status_code=400)
+    
+    publish_id = data["publish_id"]
+    upload_url = data["upload_url"]
+    
+    with open(video_path, "rb") as f:
+        video_bytes = f.read()
+    
+    headers = {
+        "Content-Type": "video/mp4",
+        "Content-Range": f"bytes 0-{video_size-1}/{video_size}",
+        "Content-Length": str(video_size),
+    }
+    
+    async with httpx.AsyncClient(timeout=None) as client:
+        put_r = await client.put(upload_url, content=video_bytes, headers=headers)
+    
+    return {"ok": True, "publish_id": publish_id, "status": "تم الرفع"}
