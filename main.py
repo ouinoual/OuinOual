@@ -408,3 +408,87 @@ async def tiktok_status(payload: dict):
         )
 
     return JSONResponse({"ok": True, "response": r.json()}, status_code=r.status_code)
+    
+@app.post("/tiktok/publish_photo")
+@app.post("/tiktok/publish_photo/")
+async def tiktok_publish_photo(payload: dict):
+    """
+    نشر صورة (أو عدة صور) على TikTok عبر Content API
+    يستخدم post/publish/content/init مع source=PULL_FROM_URL
+    """
+    access_token, err = await get_valid_access_token()
+    if err:
+        return err
+
+    # دعم أسماء مختلفة للتوافق مع Make
+    image_urls = payload.get("image_urls") or payload.get("image_url") or []
+    if isinstance(image_urls, str):
+        image_urls = [image_urls]
+    
+    if not image_urls:
+        return JSONResponse(
+            {"ok": False, "error": "Missing image_urls"}, 
+            status_code=400
+        )
+    
+    # تنظيف العنوان
+    title = (payload.get("title") or "").strip()
+    if not title:
+        title = "Check out this deal!"
+    
+    # خصوصية المنشور
+    privacy_level = (payload.get("privacy_level") or payload.get("privacylevel") or "PUBLIC").strip()
+
+    # TikTok يدعم حتى 35 صورة
+    photo_images = [{"url": url} for url in image_urls[:35]]
+
+    init_body = {
+        "post_info": {
+            "title": title,
+            "privacy_level": privacy_level,
+        },
+        "source_info": {
+            "source": "PULL_FROM_URL",
+            "photo_cover_index": 0,
+            "photo_images": photo_images,
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        init_r = await client.post(
+            "https://open.tiktokapis.com/v2/post/publish/content/init/",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; charset=UTF-8",
+            },
+            json=init_body,
+        )
+
+    init_json = init_r.json()
+    data = init_json.get("data") or {}
+
+    if init_r.status_code != 200 or not data.get("publish_id"):
+        return JSONResponse(
+            {"ok": False, "step": "init", "response": init_json},
+            status_code=init_r.status_code
+        )
+
+    publish_id = data["publish_id"]
+    
+    # التحقق من حالة النشر
+    async with httpx.AsyncClient(timeout=30) as client:
+        status_r = await client.post(
+            "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; charset=UTF-8",
+            },
+            json={"publish_id": publish_id},
+        )
+
+    return {
+        "ok": True,
+        "publish_id": publish_id,
+        "init": init_json,
+        "status": status_r.json(),
+    }
