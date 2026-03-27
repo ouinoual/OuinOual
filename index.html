@@ -1,22 +1,56 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>OuinOual</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OuinOual – TikTok Publisher</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0f0f0f; color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; padding: 24px;
+  }
+  .card {
+    background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 20px;
+    padding: 40px 32px; max-width: 420px; width: 100%; text-align: center;
+  }
+  .logo-wrap { margin-bottom: 24px; }
+  .logo-wrap .tt-icon { font-size: 48px; }
+  h1 { font-size: 26px; font-weight: 700; margin-bottom: 8px; }
+  .subtitle { color: #888; font-size: 14px; line-height: 1.6; margin-bottom: 32px; }
+  .login-btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: #fe2c55; color: #fff; text-decoration: none;
+    padding: 16px 32px; border-radius: 12px; font-size: 16px;
+    font-weight: 700; transition: opacity .2s;
+    width: 100%; justify-content: center;
+  }
+  .login-btn:hover { opacity: .88; }
+  .login-btn svg { width: 22px; height: 22px; fill: white; }
+  .footer { margin-top: 28px; font-size: 12px; color: #555; }
+  .footer a { color: #888; text-decoration: none; }
+  .footer a:hover { color: #fff; }
+</style>
 </head>
 <body>
+<div class="card">
+  <div class="logo-wrap">
+    <div class="tt-icon">🎬</div>
+  </div>
   <h1>OuinOual</h1>
-
-  <p><strong>English:</strong> OuinOual is a web service that helps automate posting videos to a TikTok account after user authorization.</p>
-  <p><strong>العربية:</strong> OuinOual خدمة ويب تساعد على أتمتة نشر الفيديوهات على حساب تيك توك بعد موافقة المستخدم.</p>
-
-  <h2>Legal</h2>
-  <p>
-    <a href="./terms.html">Terms of Service</a> |
-    <a href="./privacy.html">Privacy Policy</a>
+  <p class="subtitle">
+    A web-based tool that lets you publish videos to your own TikTok account after authorization.
   </p>
-
-  <p>Contact: ouinoual (GitHub)</p>
+  <a href="https://twitok-tlnw.onrender.com/tiktok/login" class="login-btn">
+    <svg viewBox="0 0 24 24"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.19 8.19 0 0 0 4.78 1.52V6.77a4.85 4.85 0 0 1-1.01-.08z"/></svg>
+    Connect with TikTok
+  </a>
+  <div class="footer">
+    <a href="terms.html">Terms of Service</a> &nbsp;·&nbsp;
+    <a href="privacy.html">Privacy Policy</a>
+  </div>
+</div>
 </body>
 </html>
