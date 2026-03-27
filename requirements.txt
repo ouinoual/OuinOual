@@ -5,3 +5,4 @@ httpx
 moviepy==1.0.3
 Pillow==10.0.0
 imageio[ffmpeg]
+python-multipart
