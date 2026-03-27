@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OuinOual – Post to TikTok</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f0f0f; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; min-height: 100vh; }
+  .topbar { background: #161616; border-bottom: 1px solid #2a2a2a; padding: 14px 24px; display: flex; align-items: center; gap: 12px; }
+  .topbar img.logo { width: 32px; height: 32px; border-radius: 8px; }
+  .topbar .appname { font-weight: 700; font-size: 18px; color: #fff; }
+  .topbar .powered { font-size: 12px; color: #666; margin-left: auto; display:flex; align-items:center; gap:6px; }
+  .topbar .powered svg { width:18px; height:18px; }
+
+  .container { max-width: 520px; margin: 32px auto; padding: 0 16px 80px; }
+
+  /* Account card */
+  .account-card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 14px; padding: 16px 20px; display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+  .account-card .avatar { width: 48px; height: 48px; border-radius: 50%; background: #2a2a2a; object-fit: cover; }
+  .account-card .info .label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing:.5px; }
+  .account-card .info .name { font-size: 16px; font-weight: 600; margin-top: 2px; }
+  .account-card .tt-badge { margin-left:auto; background:#fe2c55; padding:4px 10px; border-radius:20px; font-size:11px; font-weight:700; }
+
+  /* Video upload */
+  .section { margin-bottom: 20px; }
+  .section label { display: block; font-size: 13px; color: #aaa; margin-bottom: 8px; font-weight: 500; }
+  .upload-area { border: 2px dashed #333; border-radius: 12px; padding: 28px; text-align: center; cursor: pointer; transition: border-color .2s; }
+  .upload-area:hover { border-color: #fe2c55; }
+  .upload-area input { display: none; }
+  .upload-area .icon { font-size: 36px; margin-bottom: 8px; }
+  .upload-area .hint { color: #666; font-size: 13px; }
+  .upload-area .hint span { color: #fe2c55; }
+  #videoPreviewWrap { display:none; margin-top:12px; border-radius:10px; overflow:hidden; background:#000; text-align:center; }
+  #videoPreviewWrap video { max-width:100%; max-height:280px; display:block; margin:0 auto; }
+  #previewFilename { font-size:12px; color:#888; padding:6px; }
+
+  /* Inputs */
+  input[type="text"], textarea, select {
+    width: 100%; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px;
+    color: #fff; padding: 12px 14px; font-size: 14px; outline: none; transition: border-color .2s;
+  }
+  input[type="text"]:focus, textarea:focus, select:focus { border-color: #fe2c55; }
+  select option { background: #1a1a1a; }
+  select option:disabled { color: #555; }
+
+  /* Checkboxes */
+  .checkbox-group { display: flex; flex-direction: column; gap: 10px; }
+  .checkbox-item { display: flex; align-items: center; gap: 10px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+  .checkbox-item input[type="checkbox"] { width: 18px; height: 18px; accent-color: #fe2c55; cursor: pointer; flex-shrink:0; }
+  .checkbox-item .cb-label { font-size: 14px; }
+  .checkbox-item .cb-desc { font-size: 11px; color: #666; margin-top:1px; }
+
+  /* Toggle */
+  .toggle-item { display: flex; align-items: center; justify-content: space-between; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 14px; }
+  .toggle-item .toggle-info .toggle-title { font-size: 14px; font-weight: 500; }
+  .toggle-item .toggle-info .toggle-desc { font-size: 11px; color: #888; margin-top: 3px; }
+  .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink:0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #333; transition: .3s; border-radius: 24px; }
+  .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background: white; transition: .3s; border-radius: 50%; }
+  input:checked + .slider { background: #fe2c55; }
+  input:checked + .slider:before { transform: translateX(20px); }
+
+  /* Branded content warning */
+  #brandedWarning { display:none; background:#2a1010; border:1px solid #5a1a1a; border-radius:10px; padding:12px 14px; font-size:13px; color:#ff6b6b; margin-top:8px; }
+
+  /* Agreement text */
+  .agreement { font-size: 12px; color: #666; line-height: 1.6; padding: 14px; background: #1a1a1a; border-radius: 10px; }
+  .agreement a { color: #fe2c55; text-decoration: none; }
+  .agreement a:hover { text-decoration: underline; }
+
+  /* Post button */
+  .post-btn { width: 100%; padding: 16px; background: #fe2c55; border: none; border-radius: 12px; color: #fff; font-size: 16px; font-weight: 700; cursor: pointer; transition: opacity .2s, transform .1s; margin-top: 8px; }
+  .post-btn:hover { opacity: .9; }
+  .post-btn:active { transform: scale(.98); }
+  .post-btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+  /* Status messages */
+  #statusBox { display:none; margin-top:16px; padding:14px 16px; border-radius:10px; font-size:14px; line-height:1.5; }
+  #statusBox.loading { background:#1a1a2a; border:1px solid #2a2a4a; color:#aaa; }
+  #statusBox.success { background:#0a2a0a; border:1px solid #1a5a1a; color:#6fcf6f; }
+  #statusBox.error   { background:#2a0a0a; border:1px solid #5a1a1a; color:#ff6b6b; }
+  .spinner { display:inline-block; width:14px; height:14px; border:2px solid #555; border-top-color:#aaa; border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; margin-right:8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .divider { height: 1px; background: #222; margin: 8px 0; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <img src="https://ouinoual.github.io/OuinOual/icon.png" alt="OuinOual" class="logo" onerror="this.style.display='none'">
+  <span class="appname">OuinOual</span>
+  <div class="powered">
+    <svg viewBox="0 0 24 24" fill="#fe2c55"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.19 8.19 0 0 0 4.78 1.52V6.77a4.85 4.85 0 0 1-1.01-.08z"/></svg>
+    Post to TikTok
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- 1. Account Info -->
+  <div class="account-card" id="accountCard">
+    <img id="userAvatar" class="avatar" src="" alt="Avatar" onerror="this.src='data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'><circle cx='20' cy='20' r='20' fill='%23333'/><text x='20' y='26' text-anchor='middle' fill='%23999' font-size='18'>?</text></svg>'">
+    <div class="info">
+      <div class="label">Connected Account</div>
+      <div class="name" id="userName">Loading…</div>
+    </div>
+    <div class="tt-badge">TikTok</div>
+  </div>
+
+  <!-- 2. Video Upload -->
+  <div class="section">
+    <label>Video *</label>
+    <div class="upload-area" id="uploadArea" onclick="document.getElementById('videoFile').click()">
+      <input type="file" id="videoFile" accept="video/mp4,video/mov,video/*" onchange="handleFileSelect(event)">
+      <div class="icon">🎬</div>
+      <div style="font-size:15px;font-weight:600;margin-bottom:6px;">Select Video</div>
+      <div class="hint">Click to browse — <span>MP4</span> recommended · max 50MB</div>
+    </div>
+    <div id="videoPreviewWrap">
+      <video id="videoPreview" controls playsinline></video>
+      <div id="previewFilename"></div>
+    </div>
+  </div>
+
+  <!-- 3. Caption / Title -->
+  <div class="section">
+    <label>Caption / Title *</label>
+    <input type="text" id="titleInput" maxlength="150" placeholder="Write a caption for your video…" oninput="updateCharCount()">
+    <div style="text-align:right;font-size:11px;color:#555;margin-top:5px;"><span id="charCount">0</span>/150</div>
+  </div>
+
+  <!-- 4. Privacy -->
+  <div class="section">
+    <label>Who can view this post *</label>
+    <select id="privacySelect" onchange="onPrivacyChange()">
+      <option value="" disabled selected>— Select visibility —</option>
+      <option value="PUBLIC_TO_EVERYONE">🌍 Public – Everyone</option>
+      <option value="MUTUAL_FOLLOW_FRIENDS">👥 Friends – Mutual followers only</option>
+      <option id="selfOnlyOption" value="SELF_ONLY">🔒 Private – Only me</option>
+    </select>
+  </div>
+
+  <!-- 5. Interactions -->
+  <div class="section">
+    <label>Allow interactions</label>
+    <div class="checkbox-group">
+      <label class="checkbox-item">
+        <input type="checkbox" id="allowComment">
+        <div>
+          <div class="cb-label">💬 Allow Comments</div>
+          <div class="cb-desc">Let others comment on your video</div>
+        </div>
+      </label>
+      <label class="checkbox-item">
+        <input type="checkbox" id="allowDuet">
+        <div>
+          <div class="cb-label">🎵 Allow Duet</div>
+          <div class="cb-desc">Let others create a duet with your video</div>
+        </div>
+      </label>
+      <label class="checkbox-item">
+        <input type="checkbox" id="allowStitch">
+        <div>
+          <div class="cb-label">✂️ Allow Stitch</div>
+          <div class="cb-desc">Let others clip and use your video</div>
+        </div>
+      </label>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- 6. Branded Content Toggle -->
+  <div class="section">
+    <label>Content Disclosure</label>
+    <div class="toggle-item">
+      <div class="toggle-info">
+        <div class="toggle-title">📢 Branded Content</div>
+        <div class="toggle-desc">Turn on if this video promotes a brand, product, or service</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="brandedToggle" onchange="onBrandedToggle()">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div id="brandedWarning">
+      ⚠️ Branded content cannot be set to <strong>Private (Only me)</strong>. Privacy has been updated to <strong>Public</strong>.
+    </div>
+  </div>
+
+  <!-- 7. Agreement Text -->
+  <div class="section">
+    <div class="agreement" id="agreementText">
+      By posting, you agree to TikTok's
+      <a href="https://www.tiktok.com/legal/music-usage-confirmation" target="_blank" rel="noopener">Music Usage Confirmation</a>.
+    </div>
+  </div>
+
+  <!-- Post Button -->
+  <button class="post-btn" id="postBtn" onclick="submitPost()" disabled>
+    Post to TikTok
+  </button>
+
+  <!-- Status -->
+  <div id="statusBox"></div>
+
+</div>
+
+<script>
+let selectedFile = null;
+
+// --- On Load: fetch user info ---
+window.onload = async () => {
+  try {
+    const res = await fetch('/tiktok/userinfo');
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('userName').textContent = data.display_name || data.open_id || 'Connected';
+      if (data.avatar_url) document.getElementById('userAvatar').src = data.avatar_url;
+    } else {
+      document.getElementById('userName').textContent = 'Not connected';
+    }
+  } catch(e) {
+    document.getElementById('userName').textContent = 'Connected';
+  }
+};
+
+// --- File Select ---
+function handleFileSelect(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  selectedFile = file;
+  const url = URL.createObjectURL(file);
+  const preview = document.getElementById('videoPreview');
+  preview.src = url;
+  document.getElementById('videoPreviewWrap').style.display = 'block';
+  document.getElementById('previewFilename').textContent = file.name + ' (' + (file.size / 1024 / 1024).toFixed(1) + ' MB)';
+  checkFormValid();
+}
+
+// --- Character Count ---
+function updateCharCount() {
+  const val = document.getElementById('titleInput').value.length;
+  document.getElementById('charCount').textContent = val;
+  checkFormValid();
+}
+
+// --- Privacy Change ---
+function onPrivacyChange() {
+  const branded = document.getElementById('brandedToggle').checked;
+  const privacy = document.getElementById('privacySelect').value;
+  if (branded && privacy === 'SELF_ONLY') {
+    document.getElementById('privacySelect').value = 'PUBLIC_TO_EVERYONE';
+    document.getElementById('brandedWarning').style.display = 'block';
+  }
+  checkFormValid();
+}
+
+// --- Branded Toggle ---
+function onBrandedToggle() {
+  const branded = document.getElementById('brandedToggle').checked;
+  const privacy = document.getElementById('privacySelect').value;
+  const selfOpt = document.getElementById('selfOnlyOption');
+  const agreeDiv = document.getElementById('agreementText');
+
+  if (branded) {
+    selfOpt.disabled = true;
+    selfOpt.textContent = '🔒 Private – Only me (unavailable for branded content)';
+    if (privacy === 'SELF_ONLY' || privacy === '') {
+      document.getElementById('privacySelect').value = 'PUBLIC_TO_EVERYONE';
+      document.getElementById('brandedWarning').style.display = 'block';
+    }
+    agreeDiv.innerHTML = `By posting, you agree to TikTok's
+      <a href="https://www.tiktok.com/legal/branded-content-policy" target="_blank" rel="noopener">Branded Content Policy</a>
+      and <a href="https://www.tiktok.com/legal/music-usage-confirmation" target="_blank" rel="noopener">Music Usage Confirmation</a>.`;
+  } else {
+    selfOpt.disabled = false;
+    selfOpt.textContent = '🔒 Private – Only me';
+    document.getElementById('brandedWarning').style.display = 'none';
+    agreeDiv.innerHTML = `By posting, you agree to TikTok's
+      <a href="https://www.tiktok.com/legal/music-usage-confirmation" target="_blank" rel="noopener">Music Usage Confirmation</a>.`;
+  }
+  checkFormValid();
+}
+
+// --- Form Validation ---
+function checkFormValid() {
+  const hasFile = !!selectedFile;
+  const hasTitle = document.getElementById('titleInput').value.trim().length > 0;
+  const hasPrivacy = document.getElementById('privacySelect').value !== '';
+  document.getElementById('postBtn').disabled = !(hasFile && hasTitle && hasPrivacy);
+}
+
+// --- Submit Post ---
+async function submitPost() {
+  const title = document.getElementById('titleInput').value.trim();
+  const privacy = document.getElementById('privacySelect').value;
+  const allowComment = document.getElementById('allowComment').checked;
+  const allowDuet = document.getElementById('allowDuet').checked;
+  const allowStitch = document.getElementById('allowStitch').checked;
+  const branded = document.getElementById('brandedToggle').checked;
+
+  if (!selectedFile || !title || !privacy) return;
+
+  const btn = document.getElementById('postBtn');
+  const statusBox = document.getElementById('statusBox');
+
+  btn.disabled = true;
+  statusBox.style.display = 'block';
+  statusBox.className = 'loading';
+  statusBox.innerHTML = '<span class="spinner"></span> Uploading video… this may take a moment.';
+
+  try {
+    const formData = new FormData();
+    formData.append('video', selectedFile);
+    formData.append('title', title);
+    formData.append('privacy_level', privacy);
+    formData.append('disable_comment', (!allowComment).toString());
+    formData.append('disable_duet', (!allowDuet).toString());
+    formData.append('disable_stitch', (!allowStitch).toString());
+    formData.append('brand_content_toggle', branded.toString());
+
+    const res = await fetch('/tiktok/publish_form', {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.ok) {
+      statusBox.className = 'success';
+      statusBox.innerHTML = `
+        ✅ <strong>Video submitted successfully!</strong><br>
+        <span style="color:#aaa;font-size:12px;margin-top:4px;display:block;">
+          Your video is being processed and will appear on your TikTok profile within a few minutes.<br>
+          Publish ID: <code style="color:#6fcf6f">${data.publish_id}</code>
+        </span>`;
+    } else {
+      throw new Error(JSON.stringify(data));
+    }
+  } catch(e) {
+    statusBox.className = 'error';
+    statusBox.innerHTML = '❌ <strong>Failed to post.</strong><br><span style="font-size:12px;color:#aaa;">' + String(e) + '</span>';
+    btn.disabled = false;
+  }
+}
+</script>
+
+</body>
+</html>
