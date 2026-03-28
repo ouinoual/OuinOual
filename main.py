@@ -62,18 +62,6 @@ def token_expired(tokens):
     return time.time() >= float(tokens.get("expires_at", 0)) - TOKEN_SKEW_SECONDS
 
 
-def first_present(*values, default=None):
-    for value in values:
-        if value is None:
-            continue
-        if isinstance(value, str):
-            if value.strip() == "":
-                continue
-            return value
-        return value
-    return default
-
-
 def to_bool(value, default=False):
     if value is None:
         return default
@@ -86,60 +74,6 @@ def to_bool(value, default=False):
     return bool(value)
 
 
-def normalize_privacy_level(value, default="SELFONLY"):
-    if value is None:
-        return default
-
-    v = str(value).strip()
-    if not v:
-        return default
-
-    mapping = {
-        "SELF_ONLY": "SELFONLY",
-        "SELFONLY": "SELFONLY",
-        "PUBLIC_TO_EVERYONE": "PUBLICTOEVERYONE",
-        "PUBLICTOEVERYONE": "PUBLICTOEVERYONE",
-        "MUTUAL_FOLLOW_FRIENDS": "MUTUALFOLLOWFRIENDS",
-        "MUTUALFOLLOWFRIENDS": "MUTUALFOLLOWFRIENDS",
-    }
-
-    key = v.upper()
-    return mapping.get(key, v)
-
-
-def normalize_image_urls(raw_value):
-    if raw_value is None:
-        return []
-
-    if isinstance(raw_value, str):
-        raw_value = [raw_value]
-
-    if not isinstance(raw_value, list):
-        return []
-
-    urls = []
-    for item in raw_value:
-        url = None
-
-        if isinstance(item, str):
-            url = item.strip()
-
-        elif isinstance(item, dict):
-            url = first_present(
-                item.get("url"),
-                item.get("image_url"),
-                item.get("imageUrl"),
-                default=""
-            )
-            if isinstance(url, str):
-                url = url.strip()
-
-        if url:
-            urls.append(url)
-
-    return urls
-
-
 def safe_json(response):
     try:
         return response.json()
@@ -150,7 +84,10 @@ def safe_json(response):
 async def refresh_access_token():
     tokens = load_tokens()
     if not tokens or not tokens.get("refresh_token"):
-        return None, JSONResponse({"ok": False, "error": "No refresh_token. Visit /tiktok/login"}, status_code=400)
+        return None, JSONResponse(
+            {"ok": False, "error": "No refresh_token. Visit /tiktok/login"},
+            status_code=400
+        )
 
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
     if err:
@@ -191,7 +128,10 @@ async def refresh_access_token():
 async def get_valid_access_token():
     tokens = load_tokens()
     if not tokens or not tokens.get("access_token"):
-        return None, JSONResponse({"ok": False, "error": "Not authorized. Visit /tiktok/login"}, status_code=400)
+        return None, JSONResponse(
+            {"ok": False, "error": "Not authorized. Visit /tiktok/login"},
+            status_code=400
+        )
 
     if token_expired(tokens):
         tokens, err = await refresh_access_token()
@@ -250,12 +190,8 @@ def tiktok_login():
 
     resp = RedirectResponse(auth_url, status_code=302)
     resp.set_cookie(
-        key="tt_state",
-        value=state,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        max_age=600
+        key="tt_state", value=state,
+        httponly=True, secure=True, samesite="lax", max_age=600
     )
     return resp
 
@@ -291,16 +227,11 @@ async def tiktok_callback(
     USED_CODES[code] = time.time()
 
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
-    if err:
-        return err
-
+    if err: return err
     client_secret, err = require_env(TIKTOK_CLIENT_SECRET, "TIKTOK_CLIENT_SECRET")
-    if err:
-        return err
-
+    if err: return err
     redirect_uri, err = require_env(TIKTOK_REDIRECT_URI, "TIKTOK_REDIRECT_URI")
-    if err:
-        return err
+    if err: return err
 
     data = {
         "client_key": client_key,
@@ -340,8 +271,7 @@ async def tiktok_callback(
 @app.get("/tiktok/userinfo/")
 async def tiktok_userinfo():
     access_token, err = await get_valid_access_token()
-    if err:
-        return err
+    if err: return err
 
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(
@@ -366,7 +296,6 @@ def tiktok_token_info():
     t = load_tokens()
     if not t:
         return JSONResponse({"ok": False, "error": "No tokens stored yet"}, status_code=404)
-
     return {
         "ok": True,
         "open_id": t.get("open_id"),
@@ -385,16 +314,15 @@ def tiktok_token_info():
 async def tiktok_publish_form(
     video: UploadFile = File(...),
     title: str = Form("Posted via OuinOual"),
-    privacylevel: str = Form("PUBLICTOEVERYONE"),
-    disablecomment: str = Form("false"),
-    disableduet: str = Form("false"),
-    disablestitch: str = Form("false"),
-    brandcontenttoggle: str = Form("false"),
-    brandorganictoggle: str = Form("false"),
+    privacy_level: str = Form("PUBLIC_TO_EVERYONE"),
+    disable_comment: str = Form("false"),
+    disable_duet: str = Form("false"),
+    disable_stitch: str = Form("false"),
+    brand_content_toggle: str = Form("false"),
+    brand_organic_toggle: str = Form("false"),
 ):
     access_token, err = await get_valid_access_token()
-    if err:
-        return err
+    if err: return err
 
     file_id = str(uuid.uuid4())
     filepath = os.path.join(FILES_DIR, f"{file_id}.mp4")
@@ -403,18 +331,16 @@ async def tiktok_publish_form(
         f.write(await video.read())
 
     video_size = os.path.getsize(filepath)
-    title = title.strip() or "Posted via OuinOual"
-    privacy_level = normalize_privacy_level(privacylevel, default="PUBLICTOEVERYONE")
 
     init_body = {
         "post_info": {
-            "title": title,
+            "title": title.strip() or "Posted via OuinOual",
             "privacy_level": privacy_level,
-            "disable_comment": to_bool(disablecomment),
-            "disable_duet": to_bool(disableduet),
-            "disable_stitch": to_bool(disablestitch),
-            "brand_content_toggle": to_bool(brandcontenttoggle),
-            "brand_organic_toggle": to_bool(brandorganictoggle),
+            "disable_comment": to_bool(disable_comment),
+            "disable_duet": to_bool(disable_duet),
+            "disable_stitch": to_bool(disable_stitch),
+            "brand_content_toggle": to_bool(brand_content_toggle),
+            "brand_organic_toggle": to_bool(brand_organic_toggle),
         },
         "source_info": {
             "source": "FILE_UPLOAD",
@@ -437,7 +363,10 @@ async def tiktok_publish_form(
 
     data = init_json.get("data", {})
     if init_r.status_code != 200 or not data.get("upload_url"):
-        return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
+        return JSONResponse(
+            {"ok": False, "step": "init", "response": init_json},
+            status_code=init_r.status_code
+        )
 
     publish_id = data["publish_id"]
     upload_url = data["upload_url"]
@@ -455,7 +384,10 @@ async def tiktok_publish_form(
         put_r = await client.put(upload_url, content=video_bytes, headers=put_headers)
 
     if put_r.status_code not in (200, 201, 204):
-        return JSONResponse({"ok": False, "step": "upload", "status_code": put_r.status_code}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "step": "upload", "status_code": put_r.status_code},
+            status_code=400
+        )
 
     async with httpx.AsyncClient(timeout=30) as client:
         status_r = await client.post(
@@ -483,20 +415,17 @@ async def tiktok_publish_form(
 @app.post("/tiktok/publish/")
 async def tiktok_publish(payload: dict):
     access_token, err = await get_valid_access_token()
-    if err:
-        return err
+    if err: return err
 
-    file_id = first_present(payload.get("file_id"), payload.get("fileId"))
-    filepath = first_present(payload.get("filepath"), payload.get("filePath"))
-    title = str(first_present(payload.get("title"), default="Posted via API")).strip() or "Posted via API"
-
-    privacy_raw = first_present(
-        payload.get("privacy_level"),
-        payload.get("privacyLevel"),
-        payload.get("privacylevel"),
-        default="SELFONLY"
-    )
-    privacy_level = normalize_privacy_level(privacy_raw, default="SELFONLY")
+    file_id = payload.get("file_id") or payload.get("fileId")
+    filepath = payload.get("filepath") or payload.get("filePath")
+    title = (payload.get("title") or "").strip() or "Posted via API"
+    privacy_level = (
+        payload.get("privacy_level") or
+        payload.get("privacyLevel") or
+        payload.get("privacylevel") or
+        "SELF_ONLY"
+    ).strip()
 
     if file_id:
         filepath = os.path.join(FILES_DIR, f"{file_id}.mp4")
@@ -506,33 +435,13 @@ async def tiktok_publish(payload: dict):
 
     video_size = os.path.getsize(filepath)
 
-    allow_comment = first_present(payload.get("allow_comment"), payload.get("allowcomment"))
-    allow_duet = first_present(payload.get("allow_duet"), payload.get("allowduet"))
-    allow_stitch = first_present(payload.get("allow_stitch"), payload.get("allowstitch"))
-
-    disable_comment = first_present(
-        payload.get("disable_comment"),
-        payload.get("disablecomment"),
-        default=(not to_bool(allow_comment, default=False))
-    )
-    disable_duet = first_present(
-        payload.get("disable_duet"),
-        payload.get("disableduet"),
-        default=(not to_bool(allow_duet, default=False))
-    )
-    disable_stitch = first_present(
-        payload.get("disable_stitch"),
-        payload.get("disablestitch"),
-        default=(not to_bool(allow_stitch, default=False))
-    )
-
     init_body = {
         "post_info": {
             "title": title,
             "privacy_level": privacy_level,
-            "disable_comment": to_bool(disable_comment),
-            "disable_duet": to_bool(disable_duet),
-            "disable_stitch": to_bool(disable_stitch),
+            "disable_comment": to_bool(payload.get("disable_comment"), default=False),
+            "disable_duet": to_bool(payload.get("disable_duet"), default=False),
+            "disable_stitch": to_bool(payload.get("disable_stitch"), default=False),
         },
         "source_info": {
             "source": "FILE_UPLOAD",
@@ -555,7 +464,10 @@ async def tiktok_publish(payload: dict):
 
     data = init_json.get("data", {})
     if init_r.status_code != 200 or not data.get("upload_url"):
-        return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
+        return JSONResponse(
+            {"ok": False, "step": "init", "response": init_json},
+            status_code=init_r.status_code
+        )
 
     publish_id = data["publish_id"]
     upload_url = data["upload_url"]
@@ -573,7 +485,10 @@ async def tiktok_publish(payload: dict):
         put_r = await client.put(upload_url, content=video_bytes, headers=put_headers)
 
     if put_r.status_code not in (200, 201, 204):
-        return JSONResponse({"ok": False, "step": "upload", "status_code": put_r.status_code}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "step": "upload", "status_code": put_r.status_code},
+            status_code=400
+        )
 
     async with httpx.AsyncClient(timeout=30) as client:
         status_r = await client.post(
@@ -602,8 +517,7 @@ async def tiktok_publish(payload: dict):
 @app.post("/tiktok/status/")
 async def tiktok_status(payload: dict):
     access_token, err = await get_valid_access_token()
-    if err:
-        return err
+    if err: return err
 
     publish_id = payload.get("publish_id")
     if not publish_id:
@@ -637,11 +551,9 @@ def extract(payload: dict):
     out_tmpl = os.path.join(FILES_DIR, f"{file_id}.%(ext)s")
 
     subprocess.check_call([
-        "yt-dlp",
-        "-f", "bv+ba/best",
+        "yt-dlp", "-f", "bv+ba/best",
         "--merge-output-format", "mp4",
-        "-o", out_tmpl,
-        url
+        "-o", out_tmpl, url
     ])
 
     if not PUBLIC_BASE_URL:
@@ -655,7 +567,8 @@ def extract(payload: dict):
 
 
 # ─────────────────────────────────────────────
-# Photo Publishing (API Payload)
+# Photo Publishing — Transparent Proxy
+# السيرفر يضيف التوكن فقط ويُمرّر الـ JSON كما هو إلى TikTok
 # ─────────────────────────────────────────────
 
 @app.post("/tiktok/publish_photo")
@@ -665,105 +578,6 @@ async def tiktok_publish_photo(payload: dict):
     if err:
         return err
 
-    post_info = payload.get("post_info") or {}
-    source_info = payload.get("source_info") or {}
-
-    image_urls = normalize_image_urls(
-        first_present(
-            payload.get("image_urls"),
-            payload.get("image_url"),
-            source_info.get("photo_images"),
-            default=[]
-        )
-    )
-
-    if not image_urls:
-        return JSONResponse({"ok": False, "error": "Missing image_urls"}, status_code=400)
-
-    title = str(first_present(
-        payload.get("title"),
-        post_info.get("title"),
-        default="Check out this deal!"
-    )).strip() or "Check out this deal!"
-
-    description = str(first_present(
-        payload.get("description"),
-        post_info.get("description"),
-        default=""
-    ))
-
-    privacy_raw = first_present(
-        payload.get("privacy_level"),
-        payload.get("privacylevel"),
-        post_info.get("privacy_level"),
-        post_info.get("privacylevel"),
-        default="SELFONLY"
-    )
-    privacy_level = normalize_privacy_level(privacy_raw, default="SELFONLY")
-
-    disable_comment = to_bool(first_present(
-        payload.get("disable_comment"),
-        payload.get("disablecomment"),
-        post_info.get("disable_comment"),
-        post_info.get("disablecomment"),
-        default=False
-    ))
-
-    auto_add_music = to_bool(first_present(
-        payload.get("auto_add_music"),
-        payload.get("autoaddmusic"),
-        post_info.get("auto_add_music"),
-        post_info.get("autoaddmusic"),
-        default=True
-    ))
-
-    source_value = str(first_present(
-        source_info.get("source"),
-        payload.get("source"),
-        default="PULL_FROM_URL"
-    ))
-
-    photo_cover_index = first_present(
-        source_info.get("photo_cover_index"),
-        source_info.get("photocoverindex"),
-        payload.get("photo_cover_index"),
-        payload.get("photocoverindex"),
-        default=0
-    )
-    try:
-        photo_cover_index = int(photo_cover_index)
-    except Exception:
-        photo_cover_index = 0
-
-    post_mode = str(first_present(
-        payload.get("post_mode"),
-        payload.get("postmode"),
-        default="DIRECT_POST"
-    ))
-
-    media_type = str(first_present(
-        payload.get("media_type"),
-        payload.get("mediatype"),
-        default="PHOTO"
-    ))
-
-    init_body = {
-        "post_info": {
-            "title": title,
-            "description": description,
-            "privacy_level": privacy_level,
-            "disable_comment": disable_comment,
-            "auto_add_music": auto_add_music
-        },
-        "source_info": {
-            "source": source_value,
-            "photo_cover_index": photo_cover_index,
-            "photo_images": image_urls[:35]
-        },
-        "post_mode": post_mode,
-        "media_type": media_type
-    }
-
     async with httpx.AsyncClient(timeout=60) as client:
         init_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/content/init/",
@@ -771,13 +585,16 @@ async def tiktok_publish_photo(payload: dict):
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json; charset=UTF-8"
             },
-            json=init_body
+            json=payload
         )
         init_json = safe_json(init_r)
 
     data = init_json.get("data", {})
     if init_r.status_code != 200 or not data.get("publish_id"):
-        return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
+        return JSONResponse(
+            {"ok": False, "step": "init", "response": init_json},
+            status_code=init_r.status_code
+        )
 
     publish_id = data["publish_id"]
 
