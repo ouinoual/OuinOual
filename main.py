@@ -18,15 +18,15 @@ FILES_DIR = "files"
 os.makedirs(FILES_DIR, exist_ok=True)
 app.mount("/files", StaticFiles(directory=FILES_DIR), name="files")
 
-PUBLIC_BASE_URL     = os.environ.get("PUBLIC_BASE_URL")
-TIKTOK_CLIENT_KEY   = os.environ.get("TIKTOK_CLIENT_KEY")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL")
+TIKTOK_CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY")
 TIKTOK_CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET")
-TIKTOK_REDIRECT_URI  = os.environ.get("TIKTOK_REDIRECT_URI")
+TIKTOK_REDIRECT_URI = os.environ.get("TIKTOK_REDIRECT_URI")
 DEFAULT_SCOPE = "user.info.basic,video.upload,video.publish"
+TOKENS_PATH = os.environ.get("TOKENS_PATH", "tokens.json")
+TOKEN_SKEW_SECONDS = 120
 
-TOKENS_PATH         = os.environ.get("TOKENS_PATH", "tokens.json")
-TOKEN_SKEW_SECONDS  = 120
-USED_CODES          = {}
+USED_CODES = {}
 USED_CODES_TTL_SECONDS = 10 * 60
 
 
@@ -61,23 +61,31 @@ async def refresh_access_token():
     tokens = load_tokens()
     if not tokens or not tokens.get("refresh_token"):
         return None, JSONResponse({"ok": False, "error": "No refresh_token. Visit /tiktok/login"}, status_code=400)
+
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
     if err: return None, err
     client_secret, err = require_env(TIKTOK_CLIENT_SECRET, "TIKTOK_CLIENT_SECRET")
     if err: return None, err
+
     data = {
-        "client_key": client_key, "client_secret": client_secret,
-        "grant_type": "refresh_token", "refresh_token": tokens["refresh_token"],
+        "client_key": client_key,
+        "client_secret": client_secret,
+        "grant_type": "refresh_token",
+        "refresh_token": tokens["refresh_token"],
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post("https://open.tiktokapis.com/v2/oauth/token/",
-                              data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-    body = r.json()
+        r = await client.post("https://open.tiktokapis.com/v2/oauth/token/", data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        body = r.json()
+
     if r.status_code != 200 or not body.get("access_token"):
         return None, JSONResponse({"ok": False, "token_response": body}, status_code=r.status_code)
-    new_tokens = {**tokens, **body,
-                  "expires_at": time.time() + int(body.get("expires_in", 0)),
-                  "refresh_expires_at": time.time() + int(body.get("refresh_expires_in", 0))}
+
+    new_tokens = {
+        **tokens,
+        **body,
+        "expires_at": time.time() + int(body.get("expires_in", 0)),
+        "refresh_expires_at": time.time() + int(body.get("refresh_expires_in", 0))
+    }
     save_tokens(new_tokens)
     return new_tokens, None
 
@@ -85,9 +93,11 @@ async def get_valid_access_token():
     tokens = load_tokens()
     if not tokens or not tokens.get("access_token"):
         return None, JSONResponse({"ok": False, "error": "Not authorized. Visit /tiktok/login"}, status_code=400)
+    
     if token_expired(tokens):
         tokens, err = await refresh_access_token()
         if err: return None, err
+        
     return tokens["access_token"], None
 
 
@@ -102,7 +112,7 @@ def health():
 
 
 # ─────────────────────────────────────────────
-# Serve post.html  (UI page after OAuth)
+# Serve post.html (UI page after OAuth)
 # ─────────────────────────────────────────────
 
 @app.get("/post")
@@ -114,7 +124,7 @@ def post_page():
 
 
 # ─────────────────────────────────────────────
-# TikTok OAuth
+# OAuth Flow
 # ─────────────────────────────────────────────
 
 @app.get("/tiktok/login")
@@ -124,14 +134,20 @@ def tiktok_login():
     if err: return err
     redirect_uri, err = require_env(TIKTOK_REDIRECT_URI, "TIKTOK_REDIRECT_URI")
     if err: return err
+
     state = secrets.token_urlsafe(16)
-    params = {"client_key": client_key, "scope": DEFAULT_SCOPE,
-              "response_type": "code", "redirect_uri": redirect_uri, "state": state}
-    auth_url = "https://www.tiktok.com/v2/auth/authorize/?" + urlencode(params)
+    params = {
+        "client_key": client_key,
+        "scope": DEFAULT_SCOPE,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "state": state
+    }
+    auth_url = f"https://www.tiktok.com/v2/auth/authorize/?{urlencode(params)}"
+    
     resp = RedirectResponse(auth_url, status_code=302)
     resp.set_cookie(key="tt_state", value=state, httponly=True, secure=True, samesite="lax", max_age=600)
     return resp
-
 
 @app.api_route("/tiktok/callback", methods=["GET", "HEAD"])
 @app.api_route("/tiktok/callback/", methods=["GET", "HEAD"])
@@ -144,6 +160,7 @@ async def tiktok_callback(
 ):
     if request.method == "HEAD":
         return JSONResponse({"ok": True})
+        
     if error:
         return JSONResponse({"ok": False, "error": error, "error_description": error_description}, status_code=400)
     if not code:
@@ -165,18 +182,24 @@ async def tiktok_callback(
     redirect_uri, err = require_env(TIKTOK_REDIRECT_URI, "TIKTOK_REDIRECT_URI")
     if err: return err
 
-    data = {"client_key": client_key, "client_secret": client_secret,
-            "code": code, "grant_type": "authorization_code", "redirect_uri": redirect_uri}
-
+    data = {
+        "client_key": client_key,
+        "client_secret": client_secret,
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": redirect_uri
+    }
+    
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post("https://open.tiktokapis.com/v2/oauth/token/",
-                              data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-    body = r.json()
+        r = await client.post("https://open.tiktokapis.com/v2/oauth/token/", data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        body = r.json()
 
     if r.status_code == 200 and body.get("access_token"):
-        stored = {**body,
-                  "expires_at": time.time() + int(body.get("expires_in", 0)),
-                  "refresh_expires_at": time.time() + int(body.get("refresh_expires_in", 0))}
+        stored = {
+            **body,
+            "expires_at": time.time() + int(body.get("expires_in", 0)),
+            "refresh_expires_at": time.time() + int(body.get("refresh_expires_in", 0))
+        }
         save_tokens(stored)
         resp = RedirectResponse("/post", status_code=302)
         resp.delete_cookie("tt_state")
@@ -186,7 +209,7 @@ async def tiktok_callback(
 
 
 # ─────────────────────────────────────────────
-# User Info  (for UI nickname display)
+# User & Token Info
 # ─────────────────────────────────────────────
 
 @app.get("/tiktok/userinfo")
@@ -199,10 +222,11 @@ async def tiktok_userinfo():
         r = await client.get(
             "https://open.tiktokapis.com/v2/user/info/",
             params={"fields": "open_id,display_name,avatar_url"},
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={"Authorization": f"Bearer {access_token}"}
         )
-    body = r.json()
-    user = (body.get("data") or {}).get("user") or {}
+        body = r.json()
+        
+    user = body.get("data", {}).get("user", {})
     return {
         "ok": True,
         "open_id": user.get("open_id"),
@@ -210,19 +234,23 @@ async def tiktok_userinfo():
         "avatar_url": user.get("avatar_url"),
     }
 
-
 @app.get("/tiktok/token")
 @app.get("/tiktok/token/")
 def tiktok_token_info():
     t = load_tokens()
     if not t:
         return JSONResponse({"ok": False, "error": "No tokens stored yet"}, status_code=404)
-    return {"ok": True, "open_id": t.get("open_id"), "scope": t.get("scope"),
-            "expires_at": t.get("expires_at"), "refresh_expires_at": t.get("refresh_expires_at")}
+    return {
+        "ok": True,
+        "open_id": t.get("open_id"),
+        "scope": t.get("scope"),
+        "expires_at": t.get("expires_at"),
+        "refresh_expires_at": t.get("refresh_expires_at")
+    }
 
 
 # ─────────────────────────────────────────────
-# Publish via Form Upload  (used by post.html)
+# Video Publishing (Form/UI)
 # ─────────────────────────────────────────────
 
 @app.post("/tiktok/publish_form")
@@ -241,11 +269,12 @@ async def tiktok_publish_form(
     if err: return err
 
     file_id = str(uuid.uuid4())
-    file_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
-    with open(file_path, "wb") as f:
+    filepath = os.path.join(FILES_DIR, f"{file_id}.mp4")
+    
+    with open(filepath, "wb") as f:
         f.write(await video.read())
-
-    video_size = os.path.getsize(file_path)
+        
+    video_size = os.path.getsize(filepath)
     title = title.strip() or "Posted via OuinOual"
 
     def to_bool(v): return v.lower() == "true"
@@ -265,25 +294,25 @@ async def tiktok_publish_form(
             "video_size": video_size,
             "chunk_size": video_size,
             "total_chunk_count": 1,
-        },
+        }
     }
 
     async with httpx.AsyncClient(timeout=60) as client:
         init_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/video/init/",
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json; charset=UTF-8"},
-            json=init_body,
+            json=init_body
         )
-    init_json = init_r.json()
-    data = init_json.get("data") or {}
-
+        init_json = init_r.json()
+        
+    data = init_json.get("data", {})
     if init_r.status_code != 200 or not data.get("upload_url"):
         return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
 
     publish_id = data["publish_id"]
     upload_url = data["upload_url"]
 
-    with open(file_path, "rb") as f:
+    with open(filepath, "rb") as f:
         video_bytes = f.read()
 
     put_headers = {
@@ -291,6 +320,7 @@ async def tiktok_publish_form(
         "Content-Range": f"bytes 0-{video_size-1}/{video_size}",
         "Content-Length": str(video_size),
     }
+
     async with httpx.AsyncClient(timeout=None) as client:
         put_r = await client.put(upload_url, content=video_bytes, headers=put_headers)
 
@@ -301,15 +331,19 @@ async def tiktok_publish_form(
         status_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json; charset=UTF-8"},
-            json={"publish_id": publish_id},
+            json={"publish_id": publish_id}
         )
 
-    return {"ok": True, "publish_id": publish_id,
-            "upload_http_status": put_r.status_code, "status": status_r.json()}
+    return {
+        "ok": True,
+        "publish_id": publish_id,
+        "upload_http_status": put_r.status_code,
+        "status": status_r.json()
+    }
 
 
 # ─────────────────────────────────────────────
-# Publish via JSON payload  (Make.com / API)
+# Video Publishing (API Payload)
 # ─────────────────────────────────────────────
 
 @app.post("/tiktok/publish")
@@ -318,49 +352,51 @@ async def tiktok_publish(payload: dict):
     access_token, err = await get_valid_access_token()
     if err: return err
 
-    file_id   = payload.get("fileid") or payload.get("file_id")
-    file_path = payload.get("filepath") or payload.get("file_path")
-    title     = (payload.get("title") or "").strip() or "Posted via API"
-    privacy_level = (payload.get("privacy_level") or payload.get("privacylevel") or "SELF_ONLY").strip()
+    file_id = payload.get("file_id") or payload.get("fileId")
+    filepath = payload.get("filepath") or payload.get("filePath")
+    title = (payload.get("title") or "").strip() or "Posted via API"
+    privacy_level = (payload.get("privacy_level") or payload.get("privacyLevel") or "SELF_ONLY").strip()
 
     if file_id:
-        file_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
-    if not file_path or not os.path.exists(file_path):
+        filepath = os.path.join(FILES_DIR, f"{file_id}.mp4")
+        
+    if not filepath or not os.path.exists(filepath):
         return JSONResponse({"ok": False, "error": "Missing file"}, status_code=400)
 
-    video_size = os.path.getsize(file_path)
+    video_size = os.path.getsize(filepath)
+
     init_body = {
         "post_info": {
             "title": title,
             "privacy_level": privacy_level,
             "disable_comment": not payload.get("allow_comment", False),
-            "disable_duet":    not payload.get("allow_duet",    False),
-            "disable_stitch":  not payload.get("allow_stitch",  False),
+            "disable_duet": not payload.get("allow_duet", False),
+            "disable_stitch": not payload.get("allow_stitch", False),
         },
         "source_info": {
             "source": "FILE_UPLOAD",
             "video_size": video_size,
             "chunk_size": video_size,
             "total_chunk_count": 1,
-        },
+        }
     }
 
     async with httpx.AsyncClient(timeout=60) as client:
         init_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/video/init/",
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json; charset=UTF-8"},
-            json=init_body,
+            json=init_body
         )
-    init_json = init_r.json()
-    data = init_json.get("data") or {}
-
+        init_json = init_r.json()
+        
+    data = init_json.get("data", {})
     if init_r.status_code != 200 or not data.get("upload_url"):
         return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
 
     publish_id = data["publish_id"]
     upload_url = data["upload_url"]
 
-    with open(file_path, "rb") as f:
+    with open(filepath, "rb") as f:
         video_bytes = f.read()
 
     put_headers = {
@@ -368,6 +404,7 @@ async def tiktok_publish(payload: dict):
         "Content-Range": f"bytes 0-{video_size-1}/{video_size}",
         "Content-Length": str(video_size),
     }
+
     async with httpx.AsyncClient(timeout=None) as client:
         put_r = await client.put(upload_url, content=video_bytes, headers=put_headers)
 
@@ -378,15 +415,20 @@ async def tiktok_publish(payload: dict):
         status_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json; charset=UTF-8"},
-            json={"publish_id": publish_id},
+            json={"publish_id": publish_id}
         )
 
-    return {"ok": True, "publish_id": publish_id,
-            "init": init_json, "upload_http_status": put_r.status_code, "status": status_r.json()}
+    return {
+        "ok": True,
+        "publish_id": publish_id,
+        "init": init_json,
+        "upload_http_status": put_r.status_code,
+        "status": status_r.json()
+    }
 
 
 # ─────────────────────────────────────────────
-# Status fetch
+# Status Check
 # ─────────────────────────────────────────────
 
 @app.post("/tiktok/status")
@@ -394,20 +436,23 @@ async def tiktok_publish(payload: dict):
 async def tiktok_status(payload: dict):
     access_token, err = await get_valid_access_token()
     if err: return err
+
     publish_id = payload.get("publish_id")
     if not publish_id:
         return JSONResponse({"ok": False, "error": "Missing publish_id"}, status_code=400)
+
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json; charset=UTF-8"},
-            json={"publish_id": publish_id},
+            json={"publish_id": publish_id}
         )
+        
     return JSONResponse({"ok": True, "response": r.json()}, status_code=r.status_code)
 
 
 # ─────────────────────────────────────────────
-# Extract video from URL  (yt-dlp)
+# Extraction Tool
 # ─────────────────────────────────────────────
 
 @app.post("/extract")
@@ -416,16 +461,24 @@ def extract(payload: dict):
     url = payload.get("url")
     if not url:
         return JSONResponse({"ok": False, "error": "Missing url"}, status_code=400)
+
     file_id = str(uuid.uuid4())
-    outtmpl = os.path.join(FILES_DIR, f"{file_id}.%(ext)s")
-    subprocess.check_call(["yt-dlp", "-f", "bv*+ba/best", "--merge-output-format", "mp4", "-o", outtmpl, url])
+    out_tmpl = os.path.join(FILES_DIR, f"{file_id}.%(ext)s")
+    
+    subprocess.check_call(["yt-dlp", "-f", "bv+ba/best", "--merge-output-format", "mp4", "-o", out_tmpl, url])
+
     if not PUBLIC_BASE_URL:
         return JSONResponse({"ok": False, "error": "Missing PUBLIC_BASE_URL"}, status_code=500)
-    return {"ok": True, "file_id": file_id, "fileUrl": f"{PUBLIC_BASE_URL}/files/{file_id}.mp4"}
+
+    return {
+        "ok": True,
+        "file_id": file_id,
+        "fileUrl": f"{PUBLIC_BASE_URL}/files/{file_id}.mp4"
+    }
 
 
 # ─────────────────────────────────────────────
-# Publish Photo (carousel)
+# Photo Publishing (API Payload)
 # ─────────────────────────────────────────────
 
 @app.post("/tiktok/publish_photo")
@@ -437,36 +490,57 @@ async def tiktok_publish_photo(payload: dict):
     image_urls = payload.get("image_urls") or payload.get("image_url") or []
     if isinstance(image_urls, str):
         image_urls = [image_urls]
+        
     if not image_urls:
         return JSONResponse({"ok": False, "error": "Missing image_urls"}, status_code=400)
 
     title = (payload.get("title") or "").strip() or "Check out this deal!"
+    description = payload.get("description", "")
     privacy_level = (payload.get("privacy_level") or payload.get("privacylevel") or "PUBLIC_TO_EVERYONE").strip()
+    disable_comment = payload.get("disable_comment", False)
+    auto_add_music = payload.get("auto_add_music", True)
 
     init_body = {
-        "post_info": {"title": title, "privacy_level": privacy_level},
+        "post_info": {
+            "title": title,
+            "description": description,
+            "privacy_level": privacy_level,
+            "disable_comment": disable_comment,
+            "auto_add_music": auto_add_music
+        },
         "source_info": {
             "source": "PULL_FROM_URL",
             "photo_cover_index": 0,
-            "photo_images": [{"url": u} for u in image_urls[:35]],
+            "photo_images": [{"url": u} for u in image_urls[:35]]
         },
+        "post_mode": payload.get("post_mode", "DIRECT_POST"),
+        "media_type": payload.get("media_type", "PHOTO")
     }
+
     async with httpx.AsyncClient(timeout=60) as client:
         init_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/content/init/",
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json; charset=UTF-8"},
-            json=init_body,
+            json=init_body
         )
-    init_json = init_r.json()
-    data = init_json.get("data") or {}
+        init_json = init_r.json()
+        
+    data = init_json.get("data", {})
     if init_r.status_code != 200 or not data.get("publish_id"):
         return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
 
     publish_id = data["publish_id"]
+
     async with httpx.AsyncClient(timeout=30) as client:
         status_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json; charset=UTF-8"},
-            json={"publish_id": publish_id},
+            json={"publish_id": publish_id}
         )
-    return {"ok": True, "publish_id": publish_id, "init": init_json, "status": status_r.json()}
+
+    return {
+        "ok": True,
+        "publish_id": publish_id,
+        "init": init_json,
+        "status": status_r.json()
+    }
