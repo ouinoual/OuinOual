@@ -614,3 +614,66 @@ async def tiktok_publish_photo(payload: dict):
         "init": init_json,
         "status": safe_json(status_r)
     }
+PUBLISHED_POSTS_FILE = os.environ.get("PUBLISHED_POSTS_FILE", "published_posts.json")
+
+
+def load_published_posts():
+    if not os.path.exists(PUBLISHED_POSTS_FILE):
+        return []
+    try:
+        with open(PUBLISHED_POSTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def save_published_posts(items):
+    with open(PUBLISHED_POSTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+
+
+@app.post("/track-publish")
+async def track_publish(payload: dict):
+    product_id = payload.get("product_id")
+    platform = (payload.get("platform") or "").strip().lower()
+
+    if not product_id:
+        return JSONResponse(
+            {"ok": False, "error": "Missing product_id"},
+            status_code=400
+        )
+
+    if not platform:
+        return JSONResponse(
+            {"ok": False, "error": "Missing platform"},
+            status_code=400
+        )
+
+    items = load_published_posts()
+
+    item = {
+        "id": str(uuid.uuid4()),
+        "product_id": product_id,
+        "platform": platform,
+        "platform_post_id": payload.get("platform_post_id"),
+        "publish_status": payload.get("publish_status") or "published",
+        "published_at": payload.get("published_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "country": payload.get("country"),
+        "category": payload.get("category"),
+        "short_title": payload.get("short_title"),
+        "source_mode": payload.get("source_mode"),
+        "tracked_url": payload.get("tracked_url"),
+        "destination_url": payload.get("destination_url"),
+        "raw_publish_response": payload.get("raw_publish_response") or {}
+    }
+
+    items.append(item)
+    save_published_posts(items)
+
+    return {
+        "ok": True,
+        "saved": item
+    }
