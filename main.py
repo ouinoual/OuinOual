@@ -677,3 +677,55 @@ async def track_publish(payload: dict):
         "ok": True,
         "saved": item
     }
+import asyncio
+from metrics_tracker import sync_post_metrics, load_db, save_db, run_sync_all
+
+@app.post("/sync-metrics")
+async def sync_metrics_endpoint(request: Request):
+    """
+    يمكن استدعاؤه يدوياً أو من Make عبر HTTP module
+    Body: { "platform": "tiktok"|"telegram", "platform_post_id": "..." }
+    أو بدون body لتحديث جميع المنشورات دفعةً واحدة
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    if body.get("platform") and body.get("platform_post_id"):
+        rows = load_db()
+        updated_rows = []
+        for row in rows:
+            if (row.get("platform") == body["platform"] and
+                    row.get("platform_post_id") == body["platform_post_id"]):
+                metrics = await sync_post_metrics(row)
+                row.setdefault("metrics", {}).update(metrics)
+                updated_rows.append(row)
+        save_db(rows)
+        return JSONResponse({"ok": True, "updated": len(updated_rows),
+                             "metrics": updated_rows[0]["metrics"] if updated_rows else {}})
+
+    # تحديث الكل
+    count = await run_sync_all()
+    return JSONResponse({"ok": True, "updated_count": count})
+
+
+@app.get("/metrics/{platform}/{post_id}")
+async def get_metrics(platform: str, post_id: str):
+    """
+    اقرأ metrics منشور محدد
+    مثال: /metrics/tiktok/p_pub_url~v2.xxx
+    """
+    rows = load_db()
+    for row in rows:
+        if row.get("platform") == platform and row.get("platform_post_id") == post_id:
+            return JSONResponse({"ok": True, "record": row})
+    return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+
+
+@app.get("/metrics/all")
+async def get_all_metrics():
+    """أرجع كل السجلات مع metrics"""
+    rows = load_db()
+    return JSONResponse({"ok": True, "count": len(rows), "records": rows})
