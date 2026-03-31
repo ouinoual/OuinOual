@@ -350,3 +350,79 @@ async def track_publish(request: Request):
         "key":     key,
         "message": f"✅ Post tracked: {platform} / {platform_post_id}",
     })
+# ✅ جلب video_id من publish_id (بعد اكتمال النشر)
+@app.get("/tiktok/resolve_video_id/{publish_id}")
+async def tiktok_resolve_video_id(publish_id: str):
+    access_token, err = await get_valid_access_token()
+    if err:
+        return err
+
+    # الخطوة 1: تحقق من حالة النشر
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
+            json={"publish_id": publish_id},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; charset=UTF-8",
+            },
+        )
+    status_data = safe_json(r)
+    status      = status_data.get("data", {}).get("status", "")
+    video_id    = status_data.get("data", {}).get("publicaly_available_post_id", [None])[0]
+
+    if not video_id:
+        return JSONResponse({
+            "ok":         False,
+            "status":     status,
+            "message":    "video_id not ready yet — retry in 30s",
+            "publish_id": publish_id,
+        })
+
+    return JSONResponse({
+        "ok":         True,
+        "publish_id": publish_id,
+        "video_id":   video_id,
+        "status":     status,
+    })
+
+# ✅ جلب إحصائيات فيديو TikTok مباشرة
+@app.get("/tiktok/video_stats/{video_id}")
+async def tiktok_video_stats(video_id: str):
+    access_token, err = await get_valid_access_token()
+    if err:
+        return err
+
+    fields = "id,title,view_count,like_count,comment_count,share_count"
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            "https://open.tiktokapis.com/v2/video/query/",
+            params={"fields": fields},
+            json={"filters": {"video_ids": [video_id]}},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+        )
+
+    data   = safe_json(r)
+    videos = data.get("data", {}).get("videos", [])
+
+    if not videos:
+        return JSONResponse({"ok": False, "error": "no_data", "raw": data})
+
+    v        = videos[0]
+    views    = v.get("view_count", 0) or 0
+    likes    = v.get("like_count", 0) or 0
+    comments = v.get("comment_count", 0) or 0
+    shares   = v.get("share_count", 0) or 0
+
+    return JSONResponse({
+        "ok":              True,
+        "video_id":        video_id,
+        "views":           views,
+        "likes":           likes,
+        "comments":        comments,
+        "shares":          shares,
+        "engagement_rate": round((likes + comments + shares) / max(views, 1) * 100, 2),
+    })
