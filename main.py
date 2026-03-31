@@ -305,3 +305,48 @@ async def tiktok_publish_status(publish_id: str):
             },
         )
     return JSONResponse({"ok": r.status_code == 200, "tiktok_response": safe_json(r)})
+    from tracker import register_post  # ← تأكد أن tracker.py موجود في نفس المجلد
+
+# ✅ /track-publish — يستقبل payload من Make.com مباشرة
+@app.post("/track-publish")
+@app.post("/track-publish/")
+async def track_publish(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+
+    platform         = body.get("platform", "").strip()
+    platform_post_id = body.get("platform_post_id", "").strip()
+
+    if not platform or not platform_post_id:
+        return JSONResponse(
+            {"ok": False, "error": "platform and platform_post_id are required"},
+            status_code=400
+        )
+
+    product = {
+        "product_id":        body.get("product_id", ""),
+        "title":             body.get("short_title", ""),
+        "main_product_name": body.get("short_title", ""),
+        "category":          body.get("category", ""),
+        "new_price":         None,
+        "discount_pct":      None,
+    }
+
+    extra = {
+        "publish_status":  body.get("publish_status", "published"),
+        "country":         body.get("country", "FR"),
+        "source_mode":     body.get("source_mode", ""),
+        "tracked_url":     body.get("tracked_url", ""),
+        "destination_url": body.get("destination_url", ""),
+        "chat_id":         body.get("chat_id", ""),
+    }
+
+    key = register_post(platform, platform_post_id, product, extra)
+
+    return JSONResponse({
+        "ok":      True,
+        "key":     key,
+        "message": f"✅ Post tracked: {platform} / {platform_post_id}",
+    })
