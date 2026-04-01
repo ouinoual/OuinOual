@@ -1,4 +1,3 @@
-# main.py ✅ v2.1 - Fixed track-publish
 import os
 import json
 import time
@@ -6,9 +5,18 @@ import uuid
 import secrets
 from urllib.parse import urlencode
 import httpx
+import asyncio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+
+from tracker import (
+    track_publish,
+    sync_metrics_for_post,
+    run_sync_all,
+    get_post,
+    get_all_posts,
+)
 
 app = FastAPI(redirect_slashes=False)
 FILES_DIR = "files"
@@ -24,9 +32,8 @@ TOKENS_PATH           = os.environ.get("TOKENS_PATH", "tokens.json")
 TOKEN_SKEW_SECONDS    = 120
 USED_CODES            = {}
 USED_CODES_TTL_SECONDS = 10 * 60
-PUBLISHED_POSTS_FILE  = os.environ.get("PUBLISHED_POSTS_FILE", "publishedposts.json")
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────
 
 def require_env(value, name):
     if not value:
@@ -56,22 +63,6 @@ def safe_json(response):
         return response.json()
     except Exception:
         return {"raw": response.text}
-
-def load_published_posts():
-    if not os.path.exists(PUBLISHED_POSTS_FILE):
-        return []
-    try:
-        with open(PUBLISHED_POSTS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                return data
-    except Exception:
-        pass
-    return []
-
-def save_published_posts(items):
-    with open(PUBLISHED_POSTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
 
 # ─── TikTok Auth ─────────────────────────────────────────────────────────────
 
@@ -210,220 +201,123 @@ async def tiktok_token_info():
         "open_id":            tokens.get("open_id"),
     })
 
-# ─── TikTok Publish Photo ─────────────────────────────────────────────────────
+# ─── TikTok Publish ───────────────────────────────────────────────────────────
 
-@app.post("/tiktok/publish_photo")
-@app.post("/tiktok/publish_photo/")
-async def tiktok_publish_photo(request: Request):
+@app.post("/tiktok/publish")
+@app.post("/tiktok/publish/")
+async def tiktok_publish(payload: dict):
     access_token, err = await get_valid_access_token()
     if err: return err
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
 
-    post_info    = body.get("post_info", {})
-    source_info  = body.get("source_info", {})
-    photo_images = source_info.get("photo_images", [])
+    file_id = payload.get("file_id") or payload.get("fileId")
+    file_path = payload.get("file_path") or payload.get("filePath")
 
-    if not post_info:
-        return JSONResponse({"ok": False, "error": "Missing post_info"}, status_code=400)
-    if not photo_images:
-        return JSONResponse({"ok": False, "error": "Missing photo_images"}, status_code=400)
+    if file_id:
+        file_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
 
-    tiktok_payload = {
+    if not file_path or not os.path.exists(file_path):
+        return JSONResponse({"ok": False, "error": "Missing file"}, status_code=400)
+
+    video_size = os.path.getsize(file_path)
+
+    init_body = {
         "post_info": {
-            "title":           post_info.get("title", ""),
-            "description":     post_info.get("description", ""),
-            "privacy_level":   post_info.get("privacy_level", "PUBLIC_TO_EVERYONE"),
-            "disable_comment": post_info.get("disable_comment", False),
-            "auto_add_music":  post_info.get("auto_add_music", True),
+            "title":           payload.get("title", "").strip() or "Posted via Ouin/Oual",
+            "privacy_level":   payload.get("privacy_level", "PUBLIC_TO_EVERYONE"),
+            "disable_comment": payload.get("disable_comment", False),
+            "disable_duet":    payload.get("disable_duet", False),
+            "disable_stitch":  payload.get("disable_stitch", False),
+            "brand_content_toggle": payload.get("brand_content_toggle", False),
+            "brand_organic_toggle": payload.get("brand_organic_toggle", False),
         },
         "source_info": {
-            "source":            source_info.get("source", "PULL_FROM_URL"),
-            "photo_cover_index": source_info.get("photo_cover_index", 0),
-            "photo_images":      photo_images,
-        },
-        "post_mode":  body.get("post_mode", "DIRECT_POST"),
-        "media_type": body.get("media_type", "PHOTO"),
-    }
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://open.tiktokapis.com/v2/post/publish/content/init/",
-            json=tiktok_payload,
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type":  "application/json; charset=UTF-8",
-            },
-        )
-
-    resp   = safe_json(r)
-    tk_err = resp.get("error", {})
-    ok     = r.status_code == 200 and tk_err.get("code") == "ok"
-
-    return JSONResponse({
-        "ok":                   ok,
-        "publish_id":           resp.get("data", {}).get("publish_id"),
-        "tiktok_error_code":    tk_err.get("code"),
-        "tiktok_error_message": tk_err.get("message"),
-        "tiktok_response":      resp,
-    })
-
-# ─── TikTok Publish Video ─────────────────────────────────────────────────────
-
-@app.post("/tiktok/publish_video")
-@app.post("/tiktok/publish_video/")
-async def tiktok_publish_video(request: Request):
-    access_token, err = await get_valid_access_token()
-    if err: return err
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
-
-    video_url = body.get("video_url", "").strip()
-    if not video_url:
-        return JSONResponse({"ok": False, "error": "Missing video_url"}, status_code=400)
-
-    tiktok_payload = {
-        "post_info": {
-            "title":           body.get("title", ""),
-            "privacy_level":   body.get("privacy_level", "PUBLIC_TO_EVERYONE"),
-            "disable_comment": body.get("disable_comment", False),
-        },
-        "source_info": {
-            "source":    "PULL_FROM_URL",
-            "video_url": video_url,
+            "source": "FILE_UPLOAD",
+            "video_size": video_size,
+            "chunk_size": video_size,
+            "total_chunk_count": 1,
         },
     }
 
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
+        init_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/video/init/",
-            json=tiktok_payload,
             headers={
                 "Authorization": f"Bearer {access_token}",
-                "Content-Type":  "application/json; charset=UTF-8",
+                "Content-Type": "application/json; charset=UTF-8",
             },
+            json=init_body,
         )
+    init_json = safe_json(init_r)
+    data = init_json.get("data", {})
+    if init_r.status_code != 200 or not data.get("upload_url"):
+        return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
 
-    resp   = safe_json(r)
-    tk_err = resp.get("error", {})
-    ok     = r.status_code == 200 and tk_err.get("code") == "ok"
+    publish_id = data["publish_id"]
+    upload_url = data["upload_url"]
 
-    return JSONResponse({
-        "ok":                   ok,
-        "publish_id":           resp.get("data", {}).get("publish_id"),
-        "tiktok_error_code":    tk_err.get("code"),
-        "tiktok_error_message": tk_err.get("message"),
-        "tiktok_response":      resp,
-    })
+    with open(file_path, "rb") as f:
+        video_bytes = f.read()
 
-# ─── TikTok Publish Status ────────────────────────────────────────────────────
+    put_headers = {
+        "Content-Type": "video/mp4",
+        "Content-Range": f"bytes 0-{video_size - 1}/{video_size}",
+        "Content-Length": str(video_size),
+    }
 
-@app.get("/tiktok/publish_status/{publish_id}")
-async def tiktok_publish_status(publish_id: str):
-    access_token, err = await get_valid_access_token()
-    if err: return err
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
-            json={"publish_id": publish_id},
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type":  "application/json; charset=UTF-8",
-            },
-        )
-    return JSONResponse({"ok": r.status_code == 200, "tiktok_response": safe_json(r)})
+    async with httpx.AsyncClient(timeout=None) as client:
+        put_r = await client.put(upload_url, content=video_bytes, headers=put_headers)
 
-# ─── TikTok Resolve Video ID ──────────────────────────────────────────────────
-
-@app.get("/tiktok/resolve_video_id/{publish_id}")
-async def tiktok_resolve_video_id(publish_id: str):
-    access_token, err = await get_valid_access_token()
-    if err: return err
+    if put_r.status_code not in (200, 201, 204):
+        return JSONResponse({"ok": False, "step": "upload", "status_code": put_r.status_code}, status_code=400)
 
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
+        status_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
-            json={"publish_id": publish_id},
             headers={
                 "Authorization": f"Bearer {access_token}",
-                "Content-Type":  "application/json; charset=UTF-8",
+                "Content-Type": "application/json; charset=UTF-8",
             },
+            json={"publish_id": publish_id},
         )
-    status_data = safe_json(r)
-    status      = status_data.get("data", {}).get("status", "")
-    video_id    = status_data.get("data", {}).get("publicaly_available_post_id", [None])[0]
-
-    if not video_id:
-        return JSONResponse({
-            "ok":         False,
-            "status":     status,
-            "message":    "video_id not ready yet — retry in 30s",
-            "publish_id": publish_id,
-        })
 
     return JSONResponse({
-        "ok":         True,
+        "ok": True,
         "publish_id": publish_id,
-        "video_id":   video_id,
-        "status":     status,
-    })
-
-# ─── TikTok Video Stats ───────────────────────────────────────────────────────
-
-@app.get("/tiktok/video_stats/{video_id}")
-async def tiktok_video_stats(video_id: str):
-    access_token, err = await get_valid_access_token()
-    if err: return err
-
-    fields = "id,title,view_count,like_count,comment_count,share_count"
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            "https://open.tiktokapis.com/v2/video/query/",
-            params={"fields": fields},
-            json={"filters": {"video_ids": [video_id]}},
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type":  "application/json",
-            },
-        )
-
-    data   = safe_json(r)
-    videos = data.get("data", {}).get("videos", [])
-
-    if not videos:
-        return JSONResponse({"ok": False, "error": "no_data", "raw": data})
-
-    v        = videos[0]
-    views    = v.get("view_count", 0) or 0
-    likes    = v.get("like_count", 0) or 0
-    comments = v.get("comment_count", 0) or 0
-    shares   = v.get("share_count", 0) or 0
-
-    return JSONResponse({
-        "ok":              True,
-        "video_id":        video_id,
-        "views":           views,
-        "likes":           likes,
-        "comments":        comments,
-        "shares":          shares,
-        "engagement_rate": round((likes + comments + shares) / max(views, 1) * 100, 2),
+        "upload_http_status": put_r.status_code,
+        "status": safe_json(status_r),
     })
 
 # ─── Track Publish ────────────────────────────────────────────────────────────
 
 @app.post("/track-publish")
 @app.post("/track-publish/")
-async def track_publish(request: Request):
+async def track_publish_endpoint(request: Request):
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
 
-    platform         = (body.get("platform") or "").strip().lower()
+    try:
+        result = await track_publish(body)
+        return JSONResponse({
+            "ok": True,
+            "message": f"✅ Post tracked: {body.get('platform')} / {body.get('platform_post_id')}",
+            "saved": result,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+# ─── Sync Metrics ────────────────────────────────────────────────────────────
+
+@app.post("/sync-metrics")
+@app.post("/sync-metrics/")
+async def sync_metrics_endpoint(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    platform = (body.get("platform") or "").strip().lower()
     platform_post_id = (body.get("platform_post_id") or "").strip()
 
     if not platform or not platform_post_id:
@@ -432,27 +326,59 @@ async def track_publish(request: Request):
             status_code=400
         )
 
-    items = load_published_posts()
-    item = {
-        "id":               str(uuid.uuid4()),
-        "product_id":       body.get("product_id", ""),
-        "platform":         platform,
-        "platform_post_id": platform_post_id,
-        "publish_status":   body.get("publish_status", "published"),
-        "published_at":     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "country":          body.get("country", ""),
-        "category":         body.get("category", ""),
-        "short_title":      body.get("short_title", ""),
-        "source_mode":      body.get("source_mode", ""),
-        "tracked_url":      body.get("tracked_url", ""),
-        "destination_url":  body.get("destination_url", ""),
-    }
-    items.append(item)
-    save_published_posts(items)
+    try:
+        synced = await sync_metrics_for_post(platform, platform_post_id)
+        if synced:
+            return JSONResponse({
+                "ok": True,
+                "updated": 1,
+                "metrics": synced.get("metrics", {}),
+                "record": synced,
+            })
+        return JSONResponse({"ok": False, "error": "post_not_found"}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+@app.get("/metrics/{platform}/{platform_post_id}")
+async def get_metrics(platform: str, platform_post_id: str):
+    post = get_post(platform, platform_post_id)
+    if not post:
+        return JSONResponse({"ok": False, "error": "post_not_found"}, status_code=404)
+    return JSONResponse({"ok": True, "record": post})
+
+@app.get("/metrics/all")
+async def get_all_metrics():
+    count = await run_sync_all()
+    posts = get_all_posts()
     return JSONResponse({
-        "ok":      True,
-        "key":     item["id"],
-        "message": f"✅ Post tracked: {platform} / {platform_post_id}",
-        "saved":   item,
+        "ok": True,
+        "updated_count": count,
+        "count": len(posts),
+        "records": posts,
     })
+
+# ─── TikTok User Info ─────────────────────────────────────────────────────────
+
+@app.get("/tiktok/userinfo")
+@app.get("/tiktok/userinfo/")
+async def tiktok_userinfo():
+    access_token, err = await get_valid_access_token()
+    if err: return err
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(
+            "https://open.tiktokapis.com/v2/user/info/",
+            params={"fields": "openid,display_name,avatar_url"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    body = safe_json(r)
+    user = body.get("data", {}).get("user", {})
+    return JSONResponse({
+        "ok": True,
+        "openid": user.get("openid"),
+        "display_name": user.get("display_name"),
+        "avatar_url": user.get("avatar_url"),
+    })
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
