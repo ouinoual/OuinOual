@@ -1,2 +1,2 @@
-# OuinOual
-تطبيق ويب يساعد على إعادة نشر فيديوهاتك من مصادر أخرى إلى حسابك في تيك توك مع وصف تلقائي وإدارة أفضل للمحتوى.
+# aliexpress-telegram-bot
+Telegram bot for AliExpress affiliate deals
