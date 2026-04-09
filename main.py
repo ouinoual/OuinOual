@@ -11,10 +11,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from bot import main
 
-if __name__ == "__main__":
-    main()
 
 # منع 307 بين /path و /path/ لتفادي callback مزدوج
 app = FastAPI(redirect_slashes=False)
