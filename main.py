@@ -11,17 +11,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-@app.get("/debug-tokens")
-def debug_tokens():
-    try:
-        t = loadtokens()
-        if not t:
-            return JSONResponse({"ok": False, "error": "No tokens file"}, status_code=404)
-        # إخفاء الحساس
-        safe_t = {k: "***HIDDEN***" if k in ["access_token", "refresh_token"] else v for k, v in t.items()}
-        return JSONResponse({"ok": True, "path": os.path.abspath(TOKENSPATH), "tokens": safe_t})
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
 try:
     from tracker import (
         track_publish,
@@ -47,7 +37,6 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL")
 TIKTOK_CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY")
 TIKTOK_CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET")
 TIKTOK_REDIRECT_URI = os.environ.get("TIKTOK_REDIRECT_URI")
-
 DEFAULT_SCOPE = "user.info.basic,video.upload,video.publish"
 TOKENS_PATH = os.environ.get("TOKENS_PATH", "tokens.json")
 TOKEN_SKEW_SECONDS = 120
@@ -110,6 +99,25 @@ def normalize_privacy(value: Optional[str], default: str = "SELF_ONLY") -> str:
     return mapping.get(v, v)
 
 
+@app.get("/debug-tokens")
+def debug_tokens():
+    try:
+        t = load_tokens()
+        if not t:
+            return JSONResponse({"ok": False, "error": "No tokens file"}, status_code=404)
+        safe_t = {
+            k: "***HIDDEN***" if k in ["access_token", "refresh_token"] else v
+            for k, v in t.items()
+        }
+        return JSONResponse({
+            "ok": True,
+            "path": os.path.abspath(TOKENS_PATH),
+            "tokens": safe_t,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 async def refresh_access_token():
     tokens = load_tokens()
     if not tokens or not tokens.get("refresh_token"):
@@ -121,7 +129,6 @@ async def refresh_access_token():
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
     if err:
         return None, err
-
     client_secret, err = require_env(TIKTOK_CLIENT_SECRET, "TIKTOK_CLIENT_SECRET")
     if err:
         return None, err
@@ -161,12 +168,10 @@ async def get_valid_access_token():
             {"ok": False, "error": "Not authorized yet. Visit /tiktok/login"},
             status_code=400,
         )
-
     if token_expired(tokens):
         tokens, err = await refresh_access_token()
         if err:
             return None, err
-
     return tokens["access_token"], None
 
 
@@ -193,30 +198,15 @@ def extract(payload: dict):
 
     file_id = str(uuid.uuid4())
     outtmpl = os.path.join(FILES_DIR, f"{file_id}.%(ext)s")
-
-    cmd = [
-        "yt-dlp",
-        "-f",
-        "bv*+ba/best",
-        "--merge-output-format",
-        "mp4",
-        "-o",
-        outtmpl,
-        url,
-    ]
-
+    cmd = ["yt-dlp", "-f", "bv*+ba/best", "--merge-output-format", "mp4", "-o", outtmpl, url]
     try:
         subprocess.check_call(cmd)
     except subprocess.CalledProcessError as e:
-        return JSONResponse(
-            {"ok": False, "error": "extract_failed", "detail": str(e)},
-            status_code=400,
-        )
+        return JSONResponse({"ok": False, "error": "extract_failed", "detail": str(e)}, status_code=400)
 
     final_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
     if not os.path.exists(final_path):
         return JSONResponse({"ok": False, "error": "output_not_found"}, status_code=500)
-
     if not PUBLIC_BASE_URL:
         return JSONResponse({"ok": False, "error": "Missing PUBLIC_BASE_URL"}, status_code=500)
 
@@ -235,7 +225,6 @@ def tiktok_login():
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
     if err:
         return err
-
     redirect_uri, err = require_env(TIKTOK_REDIRECT_URI, "TIKTOK_REDIRECT_URI")
     if err:
         return err
@@ -248,17 +237,9 @@ def tiktok_login():
         "redirect_uri": redirect_uri,
         "state": state,
     }
-
     auth_url = "https://www.tiktok.com/v2/auth/authorize/?" + urlencode(params)
     resp = RedirectResponse(auth_url, status_code=302)
-    resp.set_cookie(
-        key="tt_state",
-        value=state,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        max_age=10 * 60,
-    )
+    resp.set_cookie("tt_state", state, httponly=True, secure=True, samesite="lax", max_age=10 * 60)
     return resp
 
 
@@ -273,13 +254,11 @@ async def tiktok_callback(
 ):
     if request.method == "HEAD":
         return JSONResponse({"ok": True})
-
     if error:
         return JSONResponse(
             {"ok": False, "error": error, "error_description": error_description, "state": state},
             status_code=400,
         )
-
     if not code:
         return JSONResponse({"ok": False, "error": "Missing code", "state": state}, status_code=400)
 
@@ -295,11 +274,9 @@ async def tiktok_callback(
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
     if err:
         return err
-
     client_secret, err = require_env(TIKTOK_CLIENT_SECRET, "TIKTOK_CLIENT_SECRET")
     if err:
         return err
-
     redirect_uri, err = require_env(TIKTOK_REDIRECT_URI, "TIKTOK_REDIRECT_URI")
     if err:
         return err
@@ -320,7 +297,6 @@ async def tiktok_callback(
         )
 
     body = safe_json(r)
-
     if r.status_code == 200 and body.get("access_token"):
         stored = {
             **body,
@@ -329,7 +305,7 @@ async def tiktok_callback(
         }
         save_tokens(stored)
 
-    resp = JSONResponse({"ok": True, "state": state, "token_response": body}, status_code=r.status_code)
+    resp = JSONResponse({"ok": True, "state": state, "token_response": body, "status_code": r.status_code})
     resp.delete_cookie("tt_state")
     return resp
 
@@ -340,7 +316,6 @@ def tiktok_token_info():
     t = load_tokens()
     if not t:
         return JSONResponse({"ok": False, "error": "No tokens stored yet"}, status_code=404)
-
     return {
         "ok": True,
         "open_id": t.get("open_id"),
@@ -360,18 +335,20 @@ async def tiktok_userinfo():
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(
             "https://open.tiktokapis.com/v2/user/info/",
-            params={"fields": "openid,display_name,avatar_url"},
+            params={"fields": "open_id,display_name,avatar_url"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
     body = safe_json(r)
     user = body.get("data", {}).get("user", {})
-    return JSONResponse({
-        "ok": True,
-        "openid": user.get("openid"),
-        "display_name": user.get("display_name"),
-        "avatar_url": user.get("avatar_url"),
-    })
+    return JSONResponse(
+        {
+            "ok": True,
+            "open_id": user.get("open_id"),
+            "display_name": user.get("display_name"),
+            "avatar_url": user.get("avatar_url"),
+        }
+    )
 
 
 @app.post("/tiktok/publish")
@@ -382,20 +359,18 @@ async def tiktok_publish(payload: dict):
         return err
 
     file_id = payload.get("file_id") or payload.get("fileId")
-    file_path = payload.get("file_path") or payload.get("filePath")
-
-    if file_id and not file_path:
-        file_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
-
-    if not file_path or not os.path.exists(file_path):
+    filepath = payload.get("filepath") or payload.get("filePath")
+    if file_id and not filepath:
+        filepath = os.path.join(FILES_DIR, f"{file_id}.mp4")
+    if not filepath or not os.path.exists(filepath):
         return JSONResponse(
-            {"ok": False, "error": "Missing file_path or file not found", "file_id": file_id, "file_path": file_path},
+            {"ok": False, "error": "Missing filepath or file not found", "file_id": file_id, "filepath": filepath},
             status_code=400,
         )
 
     title = payload.get("title", "Posted via API")
     privacy_level = normalize_privacy(payload.get("privacy_level"), "SELF_ONLY")
-    video_size = os.path.getsize(file_path)
+    video_size = os.path.getsize(filepath)
 
     init_body = {
         "post_info": {
@@ -428,12 +403,12 @@ async def tiktok_publish(payload: dict):
     init_json = safe_json(init_r)
     data = init_json.get("data") or {}
     if init_r.status_code != 200 or not data.get("upload_url") or not data.get("publish_id"):
-        return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
+        return JSONResponse({"ok": False, "step": "init", "response": init_json, "status_code": init_r.status_code}, status_code=400)
 
     publish_id = data["publish_id"]
     upload_url = data["upload_url"]
 
-    with open(file_path, "rb") as f:
+    with open(filepath, "rb") as f:
         video_bytes = f.read()
 
     put_headers = {
@@ -446,15 +421,7 @@ async def tiktok_publish(payload: dict):
         put_r = await client.put(upload_url, content=video_bytes, headers=put_headers)
 
     if put_r.status_code not in (200, 201, 204):
-        return JSONResponse(
-            {
-                "ok": False,
-                "step": "upload",
-                "status_code": put_r.status_code,
-                "text": put_r.text[:1000],
-            },
-            status_code=400,
-        )
+        return JSONResponse({"ok": False, "step": "upload", "status_code": put_r.status_code, "text": put_r.text[:1000]}, status_code=400)
 
     async with httpx.AsyncClient(timeout=30) as client:
         status_r = await client.post(
@@ -466,13 +433,7 @@ async def tiktok_publish(payload: dict):
             json={"publish_id": publish_id},
         )
 
-    return {
-        "ok": True,
-        "publish_id": publish_id,
-        "init": init_json,
-        "upload_http_status": put_r.status_code,
-        "status": safe_json(status_r),
-    }
+    return {"ok": True, "publish_id": publish_id, "init": init_json, "upload_http_status": put_r.status_code, "status": safe_json(status_r)}
 
 
 @app.post("/tiktok/publish_photo")
@@ -535,10 +496,9 @@ async def tiktok_publish_photo(payload: dict):
     init_json = safe_json(init_r)
     data = init_json.get("data") or {}
     if init_r.status_code != 200 or not data.get("publish_id"):
-        return JSONResponse({"ok": False, "step": "init", "response": init_json}, status_code=init_r.status_code)
+        return JSONResponse({"ok": False, "step": "init", "response": init_json, "status_code": init_r.status_code}, status_code=400)
 
     publish_id = data["publish_id"]
-
     async with httpx.AsyncClient(timeout=30) as client:
         status_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
@@ -549,12 +509,7 @@ async def tiktok_publish_photo(payload: dict):
             json={"publish_id": publish_id},
         )
 
-    return {
-        "ok": True,
-        "publish_id": publish_id,
-        "init": init_json,
-        "status": safe_json(status_r),
-    }
+    return {"ok": True, "publish_id": publish_id, "init": init_json, "status": safe_json(status_r)}
 
 
 @app.post("/tiktok/status")
@@ -578,20 +533,17 @@ async def tiktok_status(payload: dict):
             json={"publish_id": publish_id},
         )
 
-    return JSONResponse({"ok": True, "response": safe_json(r)}, status_code=r.status_code)
+    return JSONResponse({"ok": True, "response": safe_json(r), "status_code": r.status_code})
 
 
 @app.post("/track-publish")
-@app.post("/track-publish/")
 async def track_publish_endpoint(request: Request):
     if track_publish is None:
         return JSONResponse({"ok": False, "error": "tracker_not_available"}, status_code=501)
-
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
-
     try:
         result = await track_publish(body)
         return JSONResponse({"ok": True, "saved": result})
@@ -600,34 +552,21 @@ async def track_publish_endpoint(request: Request):
 
 
 @app.post("/sync-metrics")
-@app.post("/sync-metrics/")
 async def sync_metrics_endpoint(request: Request):
     if sync_metrics_for_post is None:
         return JSONResponse({"ok": False, "error": "tracker_not_available"}, status_code=501)
-
     try:
         body = await request.json()
     except Exception:
         body = {}
-
     platform = (body.get("platform") or "").strip().lower()
     platform_post_id = (body.get("platform_post_id") or "").strip()
-
     if not platform or not platform_post_id:
-        return JSONResponse(
-            {"ok": False, "error": "platform and platform_post_id are required"},
-            status_code=400,
-        )
-
+        return JSONResponse({"ok": False, "error": "platform and platform_post_id are required"}, status_code=400)
     try:
         synced = await sync_metrics_for_post(platform, platform_post_id)
         if synced:
-            return JSONResponse({
-                "ok": True,
-                "updated": 1,
-                "metrics": synced.get("metrics", {}),
-                "record": synced,
-            })
+            return JSONResponse({"ok": True, "updated": 1, "metrics": synced.get("metrics", {}), "record": synced})
         return JSONResponse({"ok": False, "error": "post_not_found"}, status_code=404)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
@@ -637,7 +576,6 @@ async def sync_metrics_endpoint(request: Request):
 async def get_metrics(platform: str, platform_post_id: str):
     if get_post is None:
         return JSONResponse({"ok": False, "error": "tracker_not_available"}, status_code=501)
-
     post = get_post(platform, platform_post_id)
     if not post:
         return JSONResponse({"ok": False, "error": "post_not_found"}, status_code=404)
@@ -648,15 +586,9 @@ async def get_metrics(platform: str, platform_post_id: str):
 async def get_all_metrics():
     if run_sync_all is None or get_all_posts is None:
         return JSONResponse({"ok": False, "error": "tracker_not_available"}, status_code=501)
-
     count = await run_sync_all()
     posts = get_all_posts()
-    return JSONResponse({
-        "ok": True,
-        "updated_count": count,
-        "count": len(posts),
-        "records": posts,
-    })
+    return JSONResponse({"ok": True, "updated_count": count, "count": len(posts), "records": posts})
 
 
 if __name__ == "__main__":
