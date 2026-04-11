@@ -11,7 +11,17 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-
+@app.get("/debug-tokens")
+def debug_tokens():
+    try:
+        t = loadtokens()
+        if not t:
+            return JSONResponse({"ok": False, "error": "No tokens file"}, status_code=404)
+        # إخفاء الحساس
+        safe_t = {k: "***HIDDEN***" if k in ["access_token", "refresh_token"] else v for k, v in t.items()}
+        return JSONResponse({"ok": True, "path": os.path.abspath(TOKENSPATH), "tokens": safe_t})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 try:
     from tracker import (
         track_publish,
