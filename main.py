@@ -52,9 +52,17 @@ def load_tokens():
         return json.load(f)
 
 
-def save_tokens(tokens: dict):
-    with open(TOKENS_PATH, "w", encoding="utf-8") as f:
+def savetokens(tokens: dict):
+    abs_path = os.path.abspath(TOKENSPATH)
+    print("DEBUG TOKENSPATH =", TOKENSPATH)
+    print("DEBUG ABS TOKEN PATH =", abs_path)
+    print("DEBUG ACCESS TOKEN EXISTS =", bool(tokens.get("access_token")))
+    print("DEBUG REFRESH TOKEN EXISTS =", bool(tokens.get("refresh_token")))
+
+    with open(abs_path, "w", encoding="utf-8") as f:
         json.dump(tokens, f, ensure_ascii=False, indent=2)
+
+    print("DEBUG TOKENS SAVED OK, SIZE =", os.path.getsize(abs_path))
 
 
 def cleanup_used_codes():
